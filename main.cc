@@ -42,15 +42,29 @@ global_variable bool global_is_fullscreen = true;
 global_variable RECT global_windowed_rect = {};  // 窗口模式下的屏幕坐标矩形
 global_variable DWORD global_windowed_style = 0; // 窗口模式下的窗口样式
 
-// DX11 状态全局指针
+// 全局状态指针
 global_variable D3D11_State *global_d3d11;
+global_variable GameState *global_game_state;
 
-// 线性分配器
-global_variable ArenaMemory global_arena = {};
+#if _DEBUG_BUILD
+#include "replay.h"
+// 录制回放调试
+global_variable ReplayRecorder global_recorder = {};
+#endif
 
 // ============================================================================
 // Arena 和 IO
 // ============================================================================
+
+struct ArenaMemory
+{
+    u8 *base;
+    u64 size;
+    u64 used;
+};
+
+// 线性分配器
+global_variable ArenaMemory global_arena = {};
 
 void *arena_push(u64 size)
 {
@@ -887,6 +901,23 @@ internal LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         } else if (wParam == VK_F11 && !(lParam & (1 << 30))) {
             toggle_fullscreen(hwnd);
         }
+#if _DEBUG_BUILD
+        if (wParam == VK_F5 && !(lParam & (1 << 30))) {
+            // 录制：第一次按下开始，第二次按下结束并保存
+            if (global_recorder.is_recording) {
+                replay_stop_recording(&global_recorder, REPLAY_FILE_NAME);
+            } else if (global_game_state) {
+                replay_start_recording(&global_recorder, global_game_state);
+            }
+        } else if (wParam == VK_F6 && !(lParam & (1 << 30))) {
+            // 回放：第一次按下加载并循环重放，第二次按下结束
+            if (global_recorder.is_replaying) {
+                replay_end(&global_recorder);
+            } else if (global_game_state && replay_load(&global_recorder, REPLAY_FILE_NAME)) {
+                replay_begin(&global_recorder, global_game_state);
+            }
+        }
+#endif
         break;
     case WM_SIZE: {
         // 不是最小化窗口事件
@@ -1009,6 +1040,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     // 初始化游戏状态
     GameState game_state = {};
+    global_game_state = &game_state;
 
     game_init_asset(&game_state);
     create_texture(d3d11.device, &game_state.backdrop);
@@ -1076,8 +1108,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             accumulator = MAX_ACCUMULATOR;
         }
         while (accumulator >= FIXED_TIMESTEP) {
+#if _DEBUG_BUILD
+            if (global_recorder.is_replaying) {
+                replay_tick(&global_recorder, &game_state, &global_game_input.controller[0]);
+            } else {
+                input_update(global_IGame_input, &global_game_input);
+                if (global_recorder.is_recording) {
+                    replay_record_input(&global_recorder, &global_game_input.controller[0]);
+                }
+            }
+#else
             input_update(global_IGame_input, &global_game_input);
-
+#endif
             // 保存上一逻辑步状态，供渲染插值使用
             game_state.prev_player_x = game_state.player_x;
             game_state.prev_player_y = game_state.player_y;

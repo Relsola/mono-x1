@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 #include <math.h>
 
 #define internal        static
@@ -87,13 +88,6 @@ struct v2
 // Arena 和 IO
 // ============================================================================
 
-struct ArenaMemory
-{
-    u8 *base;
-    u64 size;
-    u64 used;
-};
-
 void *arena_push(u64 size);
 void *arena_realloc(void *p, u64 oldsz, u64 newsz);
 
@@ -106,6 +100,49 @@ struct ReadFileRes
 ReadFileRes read_file(const wchar_t *filename);
 bool write_file(const wchar_t *filename, u32 size, void *memory);
 void free_file_memory(void *memory);
+
+// ============================================================================
+// 动态数组
+// ============================================================================
+
+template <typename T>
+struct Array
+{
+    T *data = nullptr;
+    u32 size = 0;
+    u32 cap = 16;
+};
+
+template <typename T>
+Array<T> init(u32 cap)
+{
+    Array<T> result = {};
+    result.cap = cap;
+    result.data = (T *)arena_push(sizeof(T) * cap);
+    return result;
+}
+
+// 确保容量并返回下一个可写槽位
+template <typename T>
+T *array_push_slot(Array<T> *arr)
+{
+    if (arr->data == nullptr) {
+        arr->data = (T *)arena_push(sizeof(T) * arr->cap);
+    }
+
+    if (arr->cap == arr->size) {
+        arr->cap *= 2;
+        arr->data = (T *)arena_realloc(arr->data, sizeof(T) * arr->size, sizeof(T) * arr->cap);
+    }
+
+    return &arr->data[arr->size++];
+}
+
+template <typename T>
+void inline array_push(Array<T> *arr, T item)
+{
+    *array_push_slot(arr) = item;
+}
 
 // ============================================================================
 // 游戏输入
