@@ -2,7 +2,7 @@
 
 // #define STBI_ONLY_PNG // 目前只保留 PNG 解码器
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#include "lib/stb_image.h"
 
 internal SpriteImage load_sprite(const wchar_t *filename)
 {

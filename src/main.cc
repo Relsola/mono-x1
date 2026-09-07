@@ -47,7 +47,7 @@ global_variable D3D11_State *global_d3d11;
 global_variable GameState *global_game_state;
 
 #if _DEBUG_BUILD
-#include "replay.h"
+#include "xg/replay.h"
 // 录制回放调试
 global_variable ReplayRecorder global_recorder = {};
 #endif

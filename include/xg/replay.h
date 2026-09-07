@@ -7,7 +7,7 @@
 // ============================================================================
 
 // 录制文件魔数 "RPLY" 与版本号
-inline constexpr wchar_t REPLAY_FILE_NAME[] = L"replay.bin";
+inline constexpr wchar_t REPLAY_FILE_NAME[] = L"build/replay.bin";
 inline constexpr u32 REPLAY_MAGIC = 0x52504C59;
 inline constexpr u32 REPLAY_VERSION = 1;
 
