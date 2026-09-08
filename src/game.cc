@@ -1,6 +1,8 @@
 #include "core.h"
 
-// #define STBI_ONLY_PNG // 目前只保留 PNG 解码器
+#define STBI_MALLOC(sz)                     scratch_push(&global_scratch, (sz))
+#define STBI_REALLOC_SIZED(p, oldsz, newsz) scratch_realloc(&global_scratch, (p), (oldsz), (newsz))
+#define STBI_FREE(p)
 #define STB_IMAGE_IMPLEMENTATION
 #include "lib/stb_image.h"
 
@@ -33,17 +35,70 @@ internal SpriteImage load_sprite(const wchar_t *filename)
     return result;
 }
 
+// 更新动画到下一帧
+internal void animation_update(SpriteAnimation *animation, f32 dt)
+{
+    if (animation->finished || animation->frame_count == 0) {
+        return;
+    }
+
+    animation->elapsed += dt;
+    while (animation->elapsed >= get_current_animation(animation)->duration) {
+        AnimationFrame *frame = get_current_animation(animation);
+        animation->elapsed -= frame->duration;
+        animation->current_frame += 1;
+
+        if (animation->current_frame >= animation->frame_count) {
+            if (animation->looping) {
+                animation->current_frame = 0;
+            } else {
+                animation->current_frame = animation->frame_count - 1;
+                animation->finished = true;
+                break;
+            }
+        }
+    }
+}
+
+AnimationFrame *get_current_animation(SpriteAnimation *animation)
+{
+    assert(animation->frame_count > 0);
+    assert(animation->current_frame < animation->frame_count);
+    return &animation->frames[animation->current_frame];
+}
+
 void game_init_asset(GameState *game_state)
 {
     game_state->backdrop = load_sprite(L"data/test_background.bmp");
 
-    // 角色放大
-    game_state->player_bagdown = load_sprite(L"data/player/bagdown/f0.png");
-    game_state->player_bagdown.scale = 4.0f;
+    SpriteAnimation *animation = &game_state->player_bagdown_animation;
+    // 暂时硬编码11张
+    animation->frame_count = 11;
+    animation->looping = true;
+    animation->frames = (AnimationFrame *)arena_push(sizeof(AnimationFrame) * 11);
+
+    // 当前先以 12 FPS 循环播放 f0 到 f10。
+    constexpr f32 frame_duration = 1.0f / 12.0f;
+    for (u32 i = 0; i < animation->frame_count; ++i) {
+        wchar_t filename[128];
+        swprintf_s(filename, L"data/player/bagdown/f%u.png", i);
+        animation->frames[i].image = load_sprite(filename);
+        animation->frames[i].image.scale = 4.0f;
+        animation->frames[i].duration = frame_duration;
+    }
+
+    // 身体碰撞箱独立于当前动画帧，位置以角色脚底中心为参考。
+    SpriteImage *first_frame = &get_current_animation(animation)->image;
+    game_state->player_collider.width = (f32)first_frame->width * first_frame->scale * 0.8f;
+    game_state->player_collider.height = (f32)first_frame->height * first_frame->scale * 0.8f;
+    game_state->player_collider.offset_x = 0.0f;
+    game_state->player_collider.offset_y = -game_state->player_collider.height * 0.2f;
 }
 
 void game_update(GameInput *game_input, GameState *game_state, f32 dt)
 {
+    animation_update(&game_state->player_bagdown_animation, dt);
+
     // 输入计算：获取本帧期望的原始位移量（像素）
     constexpr f32 max_player_speed = 640.0f;
     // constexpr f32 player_acceleration = 3200.0f; // 按下方向键时，速度趋近目标速度的加速度
@@ -69,10 +124,10 @@ void game_update(GameInput *game_input, GameState *game_state, f32 dt)
     // 轴分离碰撞检测（X/Y 独立移动与沿墙滑动）
     f32 player_x = game_state->player_x;
     f32 player_y = game_state->player_y;
-    f32 player_box_w = (f32)game_state->player_bagdown.width * game_state->player_bagdown.scale;
-    f32 player_box_h = (f32)game_state->player_bagdown.height * game_state->player_bagdown.scale;
-    // 实际碰撞箱在玩家中心向下，暂时为硬编码
-    f32 player_box_offset_y = -(f32)game_state->player_bagdown.height;
+    f32 player_box_w = game_state->player_collider.width;
+    f32 player_box_h = game_state->player_collider.height;
+    f32 player_box_offset_x = game_state->player_collider.offset_x;
+    f32 player_box_offset_y = game_state->player_collider.offset_y;
 
     Rect2D *wall_colliders = game_state->wall_colliders;
     // constexpr u32 wall_count = sizeof(game_state->wall_colliders) / sizeof(*game_state->wall_colliders);
@@ -81,7 +136,7 @@ void game_update(GameInput *game_input, GameState *game_state, f32 dt)
     // 先在 X 轴上尝试移动：碰撞时把玩家推到墙壁边缘，实现贴合
     if (target_velocity.x != 0.0f) {
         f32 next_x = player_x + target_velocity.x;
-        Rect2D player_test_x = make_rect_center(next_x, player_y + player_box_offset_y, player_box_w, player_box_h);
+        Rect2D player_test_x = make_rect_center(next_x + player_box_offset_x, player_y + player_box_offset_y, player_box_w, player_box_h);
 
         f32 resolved_x = next_x;
         for (u32 i = 0; i < wall_count; ++i) {
@@ -103,7 +158,7 @@ void game_update(GameInput *game_input, GameState *game_state, f32 dt)
     // 再在 Y 轴上尝试移动：碰撞时把玩家推到墙壁边缘，实现贴合
     if (target_velocity.y != 0.0f) {
         f32 next_y = player_y + target_velocity.y;
-        Rect2D hero_test_y = make_rect_center(player_x, next_y + player_box_offset_y, player_box_w, player_box_h);
+        Rect2D hero_test_y = make_rect_center(player_x + player_box_offset_x, next_y + player_box_offset_y, player_box_w, player_box_h);
 
         f32 resolved_y = next_y;
         for (u32 i = 0; i < wall_count; ++i) {

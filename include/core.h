@@ -88,6 +88,7 @@ struct v2
 // Arena 和 IO
 // ============================================================================
 
+// 持久的线性分配器
 void *arena_push(u64 size);
 void *arena_realloc(void *p, u64 oldsz, u64 newsz);
 
@@ -100,6 +101,23 @@ struct ReadFileRes
 ReadFileRes read_file(const wchar_t *filename);
 bool write_file(const wchar_t *filename, u32 size, void *memory);
 void free_file_memory(void *memory);
+
+// 临时线性分配
+struct ScratchArena
+{
+    u8 *base;
+    u64 size;
+    u64 used;
+};
+
+// 全局临时线性分配器
+inline ScratchArena global_scratch = {};
+
+void scratch_init(ScratchArena *arena, u64 size);
+void scratch_shutdown(ScratchArena *arena);
+void scratch_reset(ScratchArena *arena);
+void *scratch_push(ScratchArena *arena, u64 size);
+void *scratch_realloc(ScratchArena *arena, void *p, u64 oldsz, u64 newsz);
 
 // ============================================================================
 // 动态数组
@@ -226,6 +244,36 @@ struct SpriteImage
     f32 scale = 1.0f;
 };
 
+// 动画帧
+struct AnimationFrame
+{
+    SpriteImage image;
+    f32 duration;
+};
+
+// 精灵图完整动画
+struct SpriteAnimation
+{
+    AnimationFrame *frames;
+    u32 frame_count;
+    u32 current_frame;
+    f32 elapsed;
+    bool looping;
+    bool finished;
+};
+
+// 角色碰撞箱
+struct PlayerCollider
+{
+    f32 width;
+    f32 height;
+    f32 offset_x;
+    f32 offset_y;
+};
+
+// 角色当前帧动画
+AnimationFrame *get_current_animation(SpriteAnimation *animation);
+
 // 2D 摄像机：记录当前视口在游戏世界中的中心点与缩放级别
 struct Camera2D
 {
@@ -255,7 +303,8 @@ struct GameState
     Camera2D prev_camera = {}; // 上一逻辑步的摄像机，用于渲染插值
 
     SpriteImage backdrop;
-    SpriteImage player_bagdown;
+    SpriteAnimation player_bagdown_animation = {};
+    PlayerCollider player_collider;
 
     // 模拟的墙壁
     Rect2D wall_colliders[11] = {
@@ -278,5 +327,4 @@ struct GameState
 
 void game_init_asset(GameState *game_state);
 
-// 更新游戏状态
 void game_update(GameInput *game_input, GameState *game_state, f32 dt);

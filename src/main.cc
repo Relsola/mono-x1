@@ -84,6 +84,40 @@ void *arena_realloc(void *p, u64 oldsz, u64 newsz)
     return result;
 }
 
+void scratch_init(ScratchArena *arena, u64 size)
+{
+    arena->base = (u8 *)VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    arena->size = arena->base ? size : 0;
+    arena->used = 0;
+}
+
+void scratch_shutdown(ScratchArena *arena)
+{
+    if (arena->base) {
+        VirtualFree(arena->base, 0, MEM_RELEASE);
+    }
+    *arena = {};
+}
+
+void scratch_reset(ScratchArena *arena) { arena->used = 0; }
+
+void *scratch_push(ScratchArena *arena, u64 size)
+{
+    arena->used = (arena->used + 7) & ~7ull;
+    assert((arena->used + size) <= arena->size);
+    void *result = arena->base + arena->used;
+    arena->used += size;
+    return result;
+}
+
+void *scratch_realloc(ScratchArena *arena, void *p, u64 oldsz, u64 newsz)
+{
+    assert(oldsz <= newsz);
+    void *result = scratch_push(arena, newsz);
+    memcpy(result, p, oldsz);
+    return result;
+}
+
 ReadFileRes read_file(const wchar_t *filename)
 {
     ReadFileRes result = {};
@@ -1004,7 +1038,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     // 创建窗口
     HWND hwnd = CreateWindowExW(
+#if _DEBUG_BUILD
+        0, // 调试时不使用顶级窗口
+#else
         WS_EX_TOPMOST,
+#endif
         GAME_NAME, GAME_NAME,
         WS_POPUP | WS_VISIBLE,       // 无边框 / 立刻显示窗口
         0, 0,                        // 水平和垂直位置
@@ -1042,9 +1080,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     GameState game_state = {};
     global_game_state = &game_state;
 
+    scratch_init(&global_scratch, MB(64));
     game_init_asset(&game_state);
     create_texture(d3d11.device, &game_state.backdrop);
-    create_texture(d3d11.device, &game_state.player_bagdown);
+    for (u32 i = 0; i < game_state.player_bagdown_animation.frame_count; ++i) {
+        SpriteImage *frame = &game_state.player_bagdown_animation.frames[i].image;
+        create_texture(d3d11.device, frame);
+    }
+    scratch_reset(&global_scratch);
 
 #if _DEBUG_TMP
     // 自定义石砖贴图纹理
@@ -1207,14 +1250,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         // 绘制主角当前实时的脚底黄色物理碰撞盒
         draw_rect_outline_world(
             &d3d11, &render_camera, &debug_yellow_texture,
-            render_player_x, render_player_y - (f32)game_state.player_bagdown.height,
-            (f32)game_state.player_bagdown.width * game_state.player_bagdown.scale,
-            (f32)game_state.player_bagdown.height * game_state.player_bagdown.scale,
+            render_player_x + game_state.player_collider.offset_x,
+            render_player_y + game_state.player_collider.offset_y,
+            game_state.player_collider.width,
+            game_state.player_collider.height,
             client_width, client_height);
 #endif
 
         // 绘制玩家
-        draw_sprite_player(&d3d11, &render_camera, &game_state.player_bagdown,
+        draw_sprite_player(&d3d11, &render_camera,
+                           &get_current_animation(&game_state.player_bagdown_animation)->image,
                            render_player_x, render_player_y,
                            client_width, client_height);
 
@@ -1224,6 +1269,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     global_d3d11 = nullptr;
     d3d11_shutdown(&d3d11);
     texture_release(&game_state.backdrop);
-    texture_release(&game_state.player_bagdown);
+    for (u32 i = 0; i < game_state.player_bagdown_animation.frame_count; ++i) {
+        texture_release(&game_state.player_bagdown_animation.frames[i].image);
+    }
+    scratch_shutdown(&global_scratch);
     return 0;
 }
