@@ -27,7 +27,7 @@
 struct D3D11_State;
 
 global_variable constexpr wchar_t GAME_NAME[] = L"Mono";
-global_variable constexpr u8 MAX_GAME_KEY_COUNT = 8; // 一次最大处理 8 个按键，一般来说足够了
+global_variable constexpr u8 MAX_GAME_KEY_COUNT = 8; // 一次最大处理 8 个按键
 
 // 运行标识
 global_variable bool global_running = true;
@@ -183,53 +183,63 @@ internal bool input_init(IGameInput **IGame_input)
     return true;
 }
 
-// 当前只处理键盘
 internal void input_update(IGameInput *IGame_input, GameInput *input)
 {
+    local_persist f32 prev_wheel = 0.0f; // 上一帧滚轮累计位置，仅用于计算本帧增量
+
+    PlayerInput *controller = &input->player;
+    MouseInput *mouse = &input->mouse;
+
+    controller->is_pad = false;
+    mouse->wheel_delta = 0.0f;
+
+    // 上一帧存档，然后清零重新采集本帧
     for (u32 i = 0; i < GA_COUNT; ++i) {
-        input->controller[0].previous[i] = input->controller[0].current[i]; // 上一帧存档
-        input->controller[0].current[i] = false;                            // 清零后重新采集本帧
+        controller->previous[i] = controller->current[i];
+        controller->current[i] = false;
+    }
+    for (u32 i = 0; i < MOUSE_BUTTON_COUNT; ++i) {
+        mouse->previous[i] = mouse->current[i];
+        mouse->current[i] = false;
     }
 
-    // 获取所有键盘和手柄当前帧最新输入
+    // ---------------------------------------------------------------------
+    // 键盘：把虚拟键码映射为游戏动作
     IGameInputReading *reading = nullptr;
     HRESULT hr = IGame_input->GetCurrentReading(GameInputKindKeyboard, nullptr, &reading);
     if (SUCCEEDED(hr) && reading) {
-        GameInputKind kind = reading->GetInputKind();
-        if (kind == GameInputKindKeyboard) {
-            u32 keyCount = reading->GetKeyCount();
-            if (keyCount > 0) {
-                // 截断保护
-                if (keyCount > MAX_GAME_KEY_COUNT) {
-                    keyCount = MAX_GAME_KEY_COUNT;
-                }
+        u32 keyCount = reading->GetKeyCount();
+        if (keyCount > 0) {
+            // 截断保护
+            if (keyCount > MAX_GAME_KEY_COUNT) {
+                keyCount = MAX_GAME_KEY_COUNT;
+            }
 
-                GameInputKeyState keyStates[MAX_GAME_KEY_COUNT];
-                if (SUCCEEDED(reading->GetKeyState(keyCount, keyStates))) {
-                    for (u32 i = 0; i < keyCount; ++i) {
-                        switch (keyStates[i].virtualKey) {
-                        case 0x26:
-                            input->controller[0].current[GA_UP] = true;
-                            break;
-                        case 0x28:
-                            input->controller[0].current[GA_DOWN] = true;
-                            break;
-                        case 0x25:
-                            input->controller[0].current[GA_LEFT] = true;
-                            break;
-                        case 0x27:
-                            input->controller[0].current[GA_RIGHT] = true;
-                            break;
-                        case 0x20:
-                            input->controller[0].current[GA_SPACE] = true;
-                            break;
-                        case 0x51:
-                            input->controller[0].current[GA_Q] = true;
-                            break;
-                        case 0x45:
-                            input->controller[0].current[GA_E] = true;
-                            break;
-                        }
+            GameInputKeyState keyStates[MAX_GAME_KEY_COUNT];
+            if (SUCCEEDED(reading->GetKeyState(keyCount, keyStates))) {
+                for (u32 i = 0; i < keyCount; ++i) {
+                    switch (keyStates[i].virtualKey) {
+                    case 0x26:
+                        controller->current[GA_UP] = true;
+                        break;
+                    case 0x28:
+                        controller->current[GA_DOWN] = true;
+                        break;
+                    case 0x25:
+                        controller->current[GA_LEFT] = true;
+                        break;
+                    case 0x27:
+                        controller->current[GA_RIGHT] = true;
+                        break;
+                    case 0x20:
+                        controller->current[GA_SPACE] = true;
+                        break;
+                    case 0x51:
+                        controller->current[GA_Q] = true;
+                        break;
+                    case 0x45:
+                        controller->current[GA_E] = true;
+                        break;
                     }
                 }
             }
@@ -238,10 +248,83 @@ internal void input_update(IGameInput *IGame_input, GameInput *input)
         SAFE_RELEASE(reading);
     }
 
+    // ---------------------------------------------------------------------
+    // 手柄：按钮 + 摇杆 + 扳机
+    reading = nullptr;
+    hr = IGame_input->GetCurrentReading(GameInputKindGamepad, nullptr, &reading);
+    if (SUCCEEDED(hr) && reading) {
+        GameInputGamepadState gamepad = {};
+        if (SUCCEEDED(reading->GetGamepadState(&gamepad))) {
+            if (gamepad.buttons & GameInputGamepadDPadLeft) {
+                controller->current[GA_LEFT] = true;
+            }
+            if (gamepad.buttons & GameInputGamepadDPadRight) {
+                controller->current[GA_RIGHT] = true;
+            }
+            if (gamepad.buttons & GameInputGamepadDPadUp) {
+                controller->current[GA_UP] = true;
+            }
+            if (gamepad.buttons & GameInputGamepadDPadDown) {
+                controller->current[GA_DOWN] = true;
+            }
+
+            if (gamepad.buttons & GameInputGamepadA) {
+                controller->current[GA_SPACE] = true;
+            }
+            if (gamepad.buttons & GameInputGamepadLeftShoulder) {
+                controller->current[GA_Q] = true;
+            }
+            if (gamepad.buttons & GameInputGamepadRightShoulder) {
+                controller->current[GA_E] = true;
+            }
+
+            // 摇杆与扳机模拟量（原始值，死区与速度映射在游戏逻辑层处理）
+            controller->left_stick_x = gamepad.leftThumbstickX;
+            controller->left_stick_y = gamepad.leftThumbstickY;
+            controller->right_stick_x = gamepad.rightThumbstickX;
+            controller->right_stick_y = gamepad.rightThumbstickY;
+            controller->left_trigger = gamepad.leftTrigger;
+            controller->right_trigger = gamepad.rightTrigger;
+            controller->is_pad = true;
+        }
+        SAFE_RELEASE(reading);
+    }
+
+    // ---------------------------------------------------------------------
+    // 鼠标：按键 + 屏幕位置 + 滚轮
+    reading = nullptr;
+    hr = IGame_input->GetCurrentReading(GameInputKindMouse, nullptr, &reading);
+    if (SUCCEEDED(hr) && reading) {
+        GameInputMouseState mouse_state = {};
+        if (SUCCEEDED(reading->GetMouseState(&mouse_state))) {
+            if (mouse_state.buttons & GameInputMouseLeftButton) {
+                mouse->current[MOUSE_LEFT] = true;
+            }
+            if (mouse_state.buttons & GameInputMouseMiddleButton) {
+                mouse->current[MOUSE_MIDDLE] = true;
+            }
+            if (mouse_state.buttons & GameInputMouseRightButton) {
+                mouse->current[MOUSE_RIGHT] = true;
+            }
+
+            mouse->x = (f32)mouse_state.positionX;
+            mouse->y = (f32)mouse_state.positionY;
+            // wheelY 是滚轮累计位置，需与上一帧做差才能得到增量
+            f32 new_wheel = (f32)mouse_state.wheelY;
+            mouse->wheel_delta = new_wheel - prev_wheel;
+            prev_wheel = new_wheel;
+        }
+        SAFE_RELEASE(reading);
+    }
+
     // 统一计算边沿状态 pressed = 本帧刚按下（上升沿） released = 本帧刚松开（下降沿）
     for (u32 i = 0; i < GA_COUNT; ++i) {
-        input->controller[0].pressed[i] = input->controller[0].current[i] && !input->controller[0].previous[i];
-        input->controller[0].released[i] = !input->controller[0].current[i] && input->controller[0].previous[i];
+        controller->pressed[i] = controller->current[i] && !controller->previous[i];
+        controller->released[i] = !controller->current[i] && controller->previous[i];
+    }
+    for (u32 i = 0; i < MOUSE_BUTTON_COUNT; ++i) {
+        mouse->pressed[i] = mouse->current[i] && !mouse->previous[i];
+        mouse->released[i] = !mouse->current[i] && mouse->previous[i];
     }
 }
 
@@ -1153,11 +1236,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         while (accumulator >= FIXED_TIMESTEP) {
 #if _DEBUG_BUILD
             if (global_recorder.is_replaying) {
-                replay_tick(&global_recorder, &game_state, &global_game_input.controller[0]);
+                replay_tick(&global_recorder, &game_state, &global_game_input);
             } else {
                 input_update(global_IGame_input, &global_game_input);
                 if (global_recorder.is_recording) {
-                    replay_record_input(&global_recorder, &global_game_input.controller[0]);
+                    replay_record_input(&global_recorder, &global_game_input);
                 }
             }
 #else

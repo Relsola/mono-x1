@@ -95,30 +95,52 @@ void game_init_asset(GameState *game_state)
     game_state->player_collider.offset_y = -game_state->player_collider.height * 0.2f;
 }
 
+// 圆形径向死区 + 线性重映射
+// 摇杆到中心点的距离小于死区时整体归零；超过死区后线性重映射到 [0, 1]。
+internal v2 stick_to_dir(f32 x, f32 y, f32 deadzone)
+{
+    v2 result = {};
+    f32 len = sqrtf(x * x + y * y);
+    if (len > deadzone) {
+        // TODO 1.0f 线性调优
+        f32 scale = (len - deadzone) / (1.0f - deadzone);
+        result = v2{ (x / len) * scale, (y / len) * scale };
+    }
+    return result;
+}
+
 void game_update(GameInput *game_input, GameState *game_state, f32 dt)
 {
     animation_update(&game_state->player_bagdown_animation, dt);
 
-    // 输入计算：获取本帧期望的原始位移量（像素）
     constexpr f32 max_player_speed = 640.0f;
+    constexpr f32 stick_deadzone = 0.2f; // 摇杆死区阈值（经验值：XInput 默认约 24%，Steam 常见 20%）
     // constexpr f32 player_acceleration = 3200.0f; // 按下方向键时，速度趋近目标速度的加速度
     // constexpr f32 player_deceleration = 6400.0f; // 松开方向键时，速度按摩擦力回落到 0 的减速度
 
+    PlayerInput *controller = &game_input->player;
+
     v2 input_dir = {};
-    if (game_input->controller[0].current[GA_LEFT]) {
+    if (controller->current[GA_LEFT]) {
         input_dir.x -= 1.0f;
     }
-    if (game_input->controller[0].current[GA_RIGHT]) {
+    if (controller->current[GA_RIGHT]) {
         input_dir.x += 1.0f;
     }
-    if (game_input->controller[0].current[GA_UP]) {
+    if (controller->current[GA_UP]) {
         input_dir.y += 1.0f;
     }
-    if (game_input->controller[0].current[GA_DOWN]) {
+    if (controller->current[GA_DOWN]) {
         input_dir.y -= 1.0f;
     }
 
-    // 首先对输入方向进行归一化（避免对角线方向速度快√2倍），然后乘以速度和固定的dt。
+    // 摇杆模拟方向：越过死区后按满速处理（忽略幅度调速，后续再做加速度系统）
+    v2 stick_dir = stick_to_dir(controller->left_stick_x, controller->left_stick_y, stick_deadzone);
+    if (stick_dir.length_sq() > 0.0f) {
+        input_dir = stick_dir; // 当前只要越过死区就映射为 1
+    }
+
+    // 归一化方向（避免对角线数字输入速度快 √2 倍），速度恒定为最大速度
     v2 target_velocity = input_dir.normalized() * max_player_speed * dt;
 
     // 轴分离碰撞检测（X/Y 独立移动与沿墙滑动）
@@ -177,7 +199,7 @@ void game_update(GameInput *game_input, GameState *game_state, f32 dt)
         game_state->player_y = resolved_y;
     }
 
-    if (game_input->controller[0].current[GA_Q]) {
+    if (controller->current[GA_Q]) {
         game_state->camera.zoom = 2.5f;
     } else {
         game_state->camera.zoom = 1.0f;

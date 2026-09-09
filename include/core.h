@@ -166,8 +166,6 @@ void inline array_push(Array<T> *arr, T item)
 // 游戏输入
 // ============================================================================
 
-internal constexpr u8 MAX_GAME_CONTROLLER_COUNT = 4; // 最大控制器个数 4
-
 enum GameAction : u8
 {
     GA_LEFT,  // 左移动
@@ -180,9 +178,29 @@ enum GameAction : u8
     GA_COUNT  // 动作总数
 };
 
-struct GameControllerInput
+enum MouseButton : u8
 {
-    bool is_pad; // 是否为手柄
+    MOUSE_LEFT,   // 左键
+    MOUSE_MIDDLE, // 中键
+    MOUSE_RIGHT,  // 右键
+    MOUSE_BUTTON_COUNT
+};
+
+struct MouseInput
+{
+    bool current[MOUSE_BUTTON_COUNT];  // 当前帧状态
+    bool previous[MOUSE_BUTTON_COUNT]; // 上一帧状态
+    bool pressed[MOUSE_BUTTON_COUNT];  // 本帧刚按下（上升沿）
+    bool released[MOUSE_BUTTON_COUNT]; // 本帧刚松开（下降沿）
+
+    f32 x;
+    f32 y;
+    f32 wheel_delta; // 本帧滚轮增量
+};
+
+struct PlayerInput
+{
+    bool is_pad; // 本帧是否有手柄参与
 
     // TODO 由于使用累加器，在需要精确跳跃等情况时可能需要在 main 的固定步循环里消费
     bool current[GA_COUNT];  // 当前帧状态
@@ -202,7 +220,8 @@ struct GameControllerInput
 
 struct GameInput
 {
-    GameControllerInput controller[MAX_GAME_CONTROLLER_COUNT];
+    PlayerInput player; // 玩家输入（键盘 + 手柄）
+    MouseInput mouse;   // 全局鼠标输入
 };
 
 // ============================================================================
