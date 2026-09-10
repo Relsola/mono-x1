@@ -11,12 +11,12 @@ CompileFlags:
     - /W4
     - /FC
     - /Z7
-    - /RTC1
+    - /Zc:preprocessor
     - /DUNICODE
     - /D_UNICODE
-    - /D_DEBUG_TMP=1
-    - /D_DEBUG_VIS=1
-    - /D_DEBUG_BUILD=1
+    - /DMONO_DEBUG_TMP=1
+    - /DMONO_DEBUG_VIS=1
+    - /DMONO_DEBUG_BUILD=1
     - /Iinclude
     - /clang:-fdiagnostics-show-option
     - /clang:-Wno-microsoft-goto

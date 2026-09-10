@@ -2,7 +2,7 @@
 
 #define STBI_MALLOC(sz)                     scratch_push(&global_scratch, (sz))
 #define STBI_REALLOC_SIZED(p, oldsz, newsz) scratch_realloc(&global_scratch, (p), (oldsz), (newsz))
-#define STBI_FREE(p)
+#define STBI_FREE(p)                        ((void)0)
 #define STB_IMAGE_IMPLEMENTATION
 #include "lib/stb_image.h"
 

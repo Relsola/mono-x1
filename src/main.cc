@@ -5,6 +5,7 @@
 #pragma comment(lib, "GameInput.lib")
 #pragma comment(lib, "Imm32.lib")
 #pragma comment(lib, "xaudio2.lib")
+#pragma comment(lib, "advapi32")
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -17,6 +18,7 @@
 #include <xaudio2.h>
 
 #include "core.h"
+#include "logger.h"
 
 // COM 接口资源释放
 #define SAFE_RELEASE(p) if (p) { (p)->Release(); (p) = nullptr; }
@@ -46,7 +48,7 @@ global_variable DWORD global_windowed_style = 0; // 窗口模式下的窗口样�
 global_variable D3D11_State *global_d3d11;
 global_variable GameState *global_game_state;
 
-#if _DEBUG_BUILD
+#if MONO_DEBUG_BUILD
 #include "xg/replay.h"
 // 录制回放调试
 global_variable ReplayRecorder global_recorder = {};
@@ -143,18 +145,50 @@ ReadFileRes read_file(const wchar_t *filename)
     return result;
 }
 
-bool write_file(const wchar_t *filename, u32 size, void *memory)
+internal void create_parent_directories(const wchar_t *file_path)
+{
+    wchar_t path[512];
+    u32 len = 0;
+    while (file_path[len] && len + 1 < sizeof(path) / sizeof(path[0])) {
+        path[len] = file_path[len];
+        ++len;
+    }
+    path[len] = L'\0';
+
+    // 从第二个字符开始找分隔符并逐级创建，跳过盘符 "C:" / 根路径 "\\"
+    for (u32 i = 1; i < len; ++i) {
+        if (path[i] == L'\\' || path[i] == L'/') {
+            path[i] = L'\0';
+            CreateDirectoryW(path, nullptr);
+            path[i] = L'\\';
+        }
+    }
+}
+
+bool write_file(const wchar_t *filename, u32 size, void *memory, bool append)
 {
     bool result = false;
+    if (!filename) {
+        return false;
+    }
 
-    HANDLE file_handle = CreateFileW(filename, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+    // 确保父目录存在
+    create_parent_directories(filename);
+
+    DWORD creation = append ? OPEN_ALWAYS : CREATE_ALWAYS;
+    HANDLE file_handle = CreateFileW(filename, GENERIC_WRITE, 0, 0, creation, 0, 0);
     if (file_handle == INVALID_HANDLE_VALUE) {
         return result;
     }
 
-    DWORD bytes_read;
-    if (WriteFile(file_handle, memory, size, &bytes_read, 0)) {
-        result = bytes_read == size;
+    if (append) {
+        LARGE_INTEGER distance = {}; // 相对文件末尾偏移 0，即定位到末尾
+        SetFilePointerEx(file_handle, distance, nullptr, FILE_END);
+    }
+
+    DWORD bytes_written;
+    if (WriteFile(file_handle, memory, size, &bytes_written, 0)) {
+        result = bytes_written == size;
     }
 
     CloseHandle(file_handle);
@@ -166,6 +200,96 @@ void free_file_memory(void *memory)
     if (memory) {
         VirtualFree(memory, 0, 0);
     }
+}
+
+// ============================================================================
+// 运行环境信息打印
+// ============================================================================
+
+internal void log_os_version()
+{
+    typedef LONG(WINAPI * FnRtlGetVersion)(RTL_OSVERSIONINFOW *);
+
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) {
+        return;
+    }
+
+    FnRtlGetVersion RtlGetVersionFn = (FnRtlGetVersion)GetProcAddress(ntdll, "RtlGetVersion");
+    if (!RtlGetVersionFn) {
+        return;
+    }
+
+    RTL_OSVERSIONINFOW info = {};
+    info.dwOSVersionInfoSize = sizeof(info);
+    if (RtlGetVersionFn(&info) != 0) {
+        return;
+    }
+
+    LOG_INFO("OS: Windows %lu.%lu (build %lu)", info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber);
+}
+
+internal void log_cpu_info()
+{
+    wchar_t cpu_name[256] = {};
+    DWORD cpu_name_size = sizeof(cpu_name);
+    LONG status = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+        L"ProcessorNameString",
+        RRF_RT_REG_SZ,
+        nullptr,
+        cpu_name,
+        &cpu_name_size);
+
+    SYSTEM_INFO sys_info = {};
+    GetSystemInfo(&sys_info);
+
+    const wchar_t *name = (status == ERROR_SUCCESS) ? cpu_name : L"unknown";
+    LOG_INFO("CPU: %ls (%lu logical processors)", name, sys_info.dwNumberOfProcessors);
+}
+
+internal void log_memory_info()
+{
+    MEMORYSTATUSEX memory = {};
+    memory.dwLength = sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory)) {
+        LOG_INFO("RAM: %llu MB", (u64)(memory.ullTotalPhys / (1024ull * 1024ull)));
+    }
+}
+
+internal void log_gpu_info(ID3D11Device *device)
+{
+    IDXGIDevice *dxgi_device = nullptr;
+    if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), (void **)&dxgi_device)) || !dxgi_device) {
+        return;
+    }
+
+    IDXGIAdapter *adapter = nullptr;
+    if (SUCCEEDED(dxgi_device->GetAdapter(&adapter)) && adapter) {
+        DXGI_ADAPTER_DESC desc = {};
+        if (SUCCEEDED(adapter->GetDesc(&desc))) {
+            LOG_INFO("GPU: %ls (VRAM %llu MB)", desc.Description,
+                     (unsigned long long)(desc.DedicatedVideoMemory / (1024ull * 1024ull)));
+        }
+        adapter->Release();
+    }
+
+    dxgi_device->Release();
+}
+
+internal void log_system_info(ID3D11Device *device)
+{
+    SYSTEMTIME st = {};
+    GetSystemTime(&st);
+    LOG_INFO("Time: %04u-%02u-%02uT%02u:%02u:%02uZ",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond);
+
+    log_os_version();
+    log_cpu_info();
+    log_memory_info();
+    log_gpu_info(device);
 }
 
 // ============================================================================
@@ -402,7 +526,7 @@ struct D3D11_State
     ID3D11SamplerState *texture_sampler;     // 采样器
     ID3D11BlendState *alpha_blend_state;     // Alpha 混合状态（让 2D 精灵半透明正确显示）
 
-#if _DEBUG_VIS
+#if MONO_DEBUG_VIS
     ID3D11Buffer *unit_box_line_vertex_buffer; // 标准单位线框顶点缓冲 (用于调试碰撞箱线框绘制)
 #endif
 
@@ -435,7 +559,7 @@ internal ID3DBlob *compile_shader(LPCWSTR source_file, LPCSTR entry_point, LPCST
 
     if (FAILED(result)) {
         if (err) {
-            OutputDebugStringA((char *)err->GetBufferPointer());
+            LOG_ERROR((char *)err->GetBufferPointer());
             SAFE_RELEASE(err);
         }
         SAFE_RELEASE(compiled);
@@ -469,7 +593,7 @@ internal void d3d11_shutdown(D3D11_State *state)
     SAFE_RELEASE(state->vs_blob);
     SAFE_RELEASE(state->ps_blob);
 
-#if _DEBUG_VIS
+#if MONO_DEBUG_VIS
     SAFE_RELEASE(state->unit_box_line_vertex_buffer);
 #endif
 }
@@ -650,7 +774,7 @@ internal bool d3d11_initialize(HWND hwnd, UINT client_width, UINT client_height,
         return false;
     }
 
-#if _DEBUG_VIS
+#if MONO_DEBUG_VIS
     // 碰撞箱调试线框专用顶点：闭合矩形 5 个顶点 (Line Strip 连接顺序: 左下 -> 左上 -> 右上 -> 右下 -> 左下)
     Vertex unit_box_line_vertices[] = {
         { -0.5f, -0.5f, 0.0f, 0.0f, 0.0f },
@@ -755,7 +879,7 @@ internal void create_texture(ID3D11Device *device, SpriteImage *sprite)
     gpu_texture->Release();
 }
 
-#if _DEBUG_TMP
+#if MONO_DEBUG_TMP
 // 创建程序化生成的石砖贴图 (32x32) 用于墙体/地标建筑物可视化
 internal bool create_brick_texture(ID3D11Device *device, SpriteImage *sprite)
 {
@@ -809,7 +933,10 @@ internal bool create_brick_texture(ID3D11Device *device, SpriteImage *sprite)
 
 internal void texture_release(SpriteImage *sprite)
 {
-    assert(sprite->view);
+    if (!sprite) {
+        return;
+    }
+
     ((ID3D11ShaderResourceView *)sprite->view)->Release();
     sprite->view = nullptr;
     sprite->width = 0;
@@ -874,7 +1001,7 @@ internal void draw_sprite_player(D3D11_State *d3d, Camera2D *camera, SpriteImage
                      screen_w, screen_h);
 }
 
-#if _DEBUG_VIS
+#if MONO_DEBUG_VIS
 // 创建纯黄色 1x1 纯色贴图（用于碰撞线框的颜色着色）
 internal bool create_solid_color_texture(ID3D11Device *device, u8 r, u8 g, u8 b, u8 a, SpriteImage *sprite)
 {
@@ -1018,7 +1145,7 @@ internal LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         } else if (wParam == VK_F11 && !(lParam & (1 << 30))) {
             toggle_fullscreen(hwnd);
         }
-#if _DEBUG_BUILD
+#if MONO_DEBUG_BUILD
         if (wParam == VK_F5 && !(lParam & (1 << 30))) {
             // 录制：第一次按下开始，第二次按下结束并保存
             if (global_recorder.is_recording) {
@@ -1062,6 +1189,8 @@ internal LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
 
 internal bool windows_start_init()
 {
+    log_init();
+
     // 初始化输入
     if (!input_init(&global_IGame_input)) {
         return false;
@@ -1080,6 +1209,18 @@ internal bool windows_start_init()
     return true;
 }
 
+internal void windows_shutdown()
+{
+    log_shutdown();
+    d3d11_shutdown(global_d3d11);
+    scratch_shutdown(&global_scratch);
+
+    texture_release(&global_game_state->backdrop);
+    for (u32 i = 0; i < global_game_state->player_bagdown_animation.frame_count; ++i) {
+        texture_release(&global_game_state->player_bagdown_animation.frames[i].image);
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
     if (!windows_start_init()) {
@@ -1095,6 +1236,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wc.lpszClassName = GAME_NAME;
     // 注册窗口类
     if (!RegisterClassExW(&wc)) {
+        LOG_ERROR("RegisterClassExW failed");
+        windows_shutdown();
         return 0;
     }
 
@@ -1121,7 +1264,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     // 创建窗口
     HWND hwnd = CreateWindowExW(
-#if _DEBUG_BUILD
+#if MONO_DEBUG_BUILD
         0, // 调试时不使用顶级窗口
 #else
         WS_EX_TOPMOST,
@@ -1133,6 +1276,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         nullptr, nullptr, hInstance, nullptr);
 
     if (hwnd == nullptr) {
+        LOG_ERROR("CreateWindowExW failed");
+        windows_shutdown();
         return 0;
     }
 
@@ -1148,7 +1293,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     client_width = screen_width;
     client_height = screen_height;
     if (!d3d11_initialize(hwnd, client_width, client_height, &d3d11)) {
-        d3d11_shutdown(&d3d11);
+        LOG_ERROR("D3D11 initialize failed");
+        windows_shutdown();
         DestroyWindow(hwnd);
         return 0;
     }
@@ -1172,13 +1318,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     }
     scratch_reset(&global_scratch);
 
-#if _DEBUG_TMP
+#if MONO_DEBUG_TMP
     // 自定义石砖贴图纹理
     SpriteImage wall_texture = {};
     create_brick_texture(d3d11.device, &wall_texture);
 #endif
 
-#if _DEBUG_VIS
+#if MONO_DEBUG_VIS
     // 创建黄色纯色贴图（用于碰撞箱调试线框）
     SpriteImage debug_yellow_texture = {};
     create_solid_color_texture(d3d11.device, 255, 230, 0, 255, &debug_yellow_texture);
@@ -1197,6 +1343,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     // ============================================================================
     // Windows 消息循环
     // ============================================================================
+
+    log_system_info(d3d11.device);
 
     while (global_running) {
         MSG msg = {};
@@ -1234,7 +1382,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             accumulator = MAX_ACCUMULATOR;
         }
         while (accumulator >= FIXED_TIMESTEP) {
-#if _DEBUG_BUILD
+#if MONO_DEBUG_BUILD
             if (global_recorder.is_replaying) {
                 replay_tick(&global_recorder, &game_state, &global_game_input);
             } else {
@@ -1309,7 +1457,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             }
         }
 
-#if _DEBUG_VIS
+#if MONO_DEBUG_VIS
         constexpr u32 wall_count = ARRAYSIZE(game_state.wall_colliders);
         Rect2D *wall_colliders = game_state.wall_colliders;
 
@@ -1349,12 +1497,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         d3d11.swap_chain->Present(1, 0); // 1 = 等待垂直同步（Flip Model 下稳定且无撕裂）
     }
 
-    global_d3d11 = nullptr;
-    d3d11_shutdown(&d3d11);
-    texture_release(&game_state.backdrop);
-    for (u32 i = 0; i < game_state.player_bagdown_animation.frame_count; ++i) {
-        texture_release(&game_state.player_bagdown_animation.frames[i].image);
-    }
-    scratch_shutdown(&global_scratch);
+    windows_shutdown();
     return 0;
 }

@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 #include <math.h>
 
 #define internal        static
@@ -99,7 +101,7 @@ struct ReadFileRes
 };
 
 ReadFileRes read_file(const wchar_t *filename);
-bool write_file(const wchar_t *filename, u32 size, void *memory);
+bool write_file(const wchar_t *filename, u32 size, void *memory, bool append = false);
 void free_file_memory(void *memory);
 
 // 临时线性分配
