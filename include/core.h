@@ -24,6 +24,10 @@ typedef uint64_t u64;
 typedef float    f32;
 typedef double   f64;
 
+inline constexpr f32 PI = 3.14159265358979323846f;
+// 二维对角方向归一化分量
+inline constexpr f32 INV_SQRT_2 = 0.70710678f;
+
 template <typename T>
 constexpr inline T MAX(T a, T b) { return a > b ? a : b; }
 

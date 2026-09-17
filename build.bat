@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 cd /D "%~dp0"
 
-set source_files="%CD%\src\main.cc" "%CD%\src\game.cc" "%CD%\src\collision.cc" "%CD%\src\logger.cc"
+set source_files="%CD%\src\main.cc" "%CD%\src\game.cc" "%CD%\src\collision.cc" "%CD%\src\logger.cc" "%CD%\src\audio.cc"
 set cl_common=/std:c++20 /MTd /nologo /GR- /EHs- /EHc- /MP /Od /Zc:preprocessor ^
     /fp:fast /arch:AVX2 /Gv /Oi ^
     /FC /Z7 /JMC- /W4 /I"%CD%\include" ^

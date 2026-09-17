@@ -19,6 +19,7 @@
 
 #include "core.h"
 #include "logger.h"
+#include "audio.h"
 
 // COM 接口资源释放
 #define SAFE_RELEASE(p) if (p) { (p)->Release(); (p) = nullptr; }
@@ -47,6 +48,7 @@ global_variable DWORD global_windowed_style = 0; // 窗口模式下的窗口样�
 // 全局状态指针
 global_variable D3D11_State *global_d3d11;
 global_variable GameState *global_game_state;
+global_variable AudioState *global_audio;
 
 #if MONO_DEBUG_BUILD
 #include "xg/replay.h"
@@ -1211,9 +1213,10 @@ internal bool windows_start_init()
 
 internal void windows_shutdown()
 {
-    log_shutdown();
+    audio_shutdown(global_audio);
     d3d11_shutdown(global_d3d11);
     scratch_shutdown(&global_scratch);
+    log_shutdown();
 
     texture_release(&global_game_state->backdrop);
     for (u32 i = 0; i < global_game_state->player_bagdown_animation.frame_count; ++i) {
@@ -1299,6 +1302,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         return 0;
     }
     global_d3d11 = &d3d11;
+
+    // ============================================================================
+    // 音频系统初始化
+    // ============================================================================
+    AudioState audio = {};
+    global_audio = &audio;
+    if (!audio_init(&audio)) {
+        // 音频不是运行的必需条件（例如没有输出设备），失败只降级为静音
+        LOG_WARN("audio_init failed");
+    }
 
     D3D11_VIEWPORT viewport = {};
     viewport.Width = (f32)client_width;   // 视口宽度
