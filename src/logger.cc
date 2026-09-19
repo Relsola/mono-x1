@@ -1,6 +1,6 @@
 #include "logger.h"
 
-constexpr wchar_t LOG_FILE_NAME[] = L"build/log/game.log";
+constexpr wchar_t LOG_FILE_NAME[] = L"game.log";
 
 // 内存缓冲 64KB
 constexpr u32 LOG_BUFFER_SIZE = KB(64);
@@ -92,6 +92,11 @@ void log_write(LogLevel level, const char *filename, i32 line_no, const char *fm
     // 补换行并整体追加进缓冲
     line[head++] = '\n';
     log_buffer_append(line, head);
+
+    // 错误与警告立即落盘
+    if (level >= LOG_LEVEL_WARN) {
+        log_flush();
+    }
 }
 
 void log_flush()

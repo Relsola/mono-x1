@@ -1,4 +1,5 @@
 #include "core.h"
+#include "game_audio.h"
 
 #define STBI_MALLOC(sz)                     scratch_push(&global_scratch, (sz))
 #define STBI_REALLOC_SIZED(p, oldsz, newsz) scratch_realloc(&global_scratch, (p), (oldsz), (newsz))
@@ -115,6 +116,11 @@ void game_update(GameInput *game_input, GameState *game_state, f32 dt)
 
     constexpr f32 max_player_speed = 640.0f;
     constexpr f32 stick_deadzone = 0.2f; // 摇杆死区阈值（经验值：XInput 默认约 24%，Steam 常见 20%）
+    // 冲刺：约 2.5 倍跑速，持续 0.15 秒（位移约 240 像素），结束后有一段冷却
+    // 60Hz 下单步位移 = 1600/60 ≈ 27 像素 < 墙厚 48 像素，因此不会跨过墙体
+    constexpr f32 dash_speed = 1600.0f;
+    constexpr f32 dash_duration = 0.15f;
+    constexpr f32 dash_cooldown_time = 0.4f;
     // constexpr f32 player_acceleration = 3200.0f; // 按下方向键时，速度趋近目标速度的加速度
     // constexpr f32 player_deceleration = 6400.0f; // 松开方向键时，速度按摩擦力回落到 0 的减速度
 
@@ -140,8 +146,49 @@ void game_update(GameInput *game_input, GameState *game_state, f32 dt)
         input_dir = stick_dir; // 当前只要越过死区就映射为 1
     }
 
-    // 归一化方向（避免对角线数字输入速度快 √2 倍），速度恒定为最大速度
-    v2 target_velocity = input_dir.normalized() * max_player_speed * dt;
+    // ---------------------------------------------------------------------
+    // 朝向与冲刺状态机（都放在固定步长内，保证回放能完整重现）
+    // ---------------------------------------------------------------------
+    // 朝向只由水平输入决定，上下输入不影响（将来改成平台跳跃时上下的移动会被移除）
+    if (input_dir.x != 0.0f) {
+        game_state->facing = (input_dir.x > 0.0f) ? FACE_RIGHT : FACE_LEFT;
+    }
+
+    if (game_state->dash_cooldown > 0.0f) {
+        game_state->dash_cooldown -= dt;
+    }
+
+    // 冲刺触发：上升沿 + 冷却；方向在启动瞬间按当前朝向锁定（水平冲刺）
+    if (controller->pressed[GA_DASH] && game_state->state != PSTATE_DASH && game_state->dash_cooldown <= 0.0f) {
+        game_state->state = PSTATE_DASH;
+        game_state->dash_timer = dash_duration;
+        game_state->dash_cooldown = dash_duration + dash_cooldown_time;
+        game_state->dash_dir_x = (game_state->facing == FACE_RIGHT) ? 1.0f : -1.0f;
+        game_audio_play_dash();
+    }
+
+    if (game_state->state == PSTATE_DASH) {
+        game_state->dash_timer -= dt;
+        if (game_state->dash_timer <= 0.0f) {
+            game_state->state = (input_dir.length_sq() > 0.0f) ? PSTATE_RUN : PSTATE_IDLE;
+        }
+    } else {
+        game_state->state = (input_dir.length_sq() > 0.0f) ? PSTATE_RUN : PSTATE_IDLE;
+    }
+
+    // 拾取音效（上升沿触发）
+    if (controller->pressed[GA_COIN]) {
+        game_audio_play_coin();
+    }
+
+    // 归一化方向（避免对角线数字输入速度快 √2 倍），速度恒定为最大速度；
+    // 冲刺期间忽略输入方向，只做水平快速位移，方向在启动瞬间已锁定
+    v2 target_velocity = {};
+    if (game_state->state == PSTATE_DASH) {
+        target_velocity = v2{ game_state->dash_dir_x * dash_speed * dt, 0.0f };
+    } else {
+        target_velocity = input_dir.normalized() * max_player_speed * dt;
+    }
 
     // 轴分离碰撞检测（X/Y 独立移动与沿墙滑动）
     f32 player_x = game_state->player_x;

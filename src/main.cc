@@ -20,6 +20,7 @@
 #include "core.h"
 #include "logger.h"
 #include "audio.h"
+#include "game_audio.h"
 
 // COM 接口资源释放
 #define SAFE_RELEASE(p) if (p) { (p)->Release(); (p) = nullptr; }
@@ -364,7 +365,10 @@ internal void input_update(IGameInput *IGame_input, GameInput *input)
                         controller->current[GA_Q] = true;
                         break;
                     case 0x45:
-                        controller->current[GA_E] = true;
+                        controller->current[GA_COIN] = true;
+                        break;
+                    case 0x46:
+                        controller->current[GA_DASH] = true;
                         break;
                     }
                 }
@@ -394,6 +398,9 @@ internal void input_update(IGameInput *IGame_input, GameInput *input)
                 controller->current[GA_DOWN] = true;
             }
 
+            if (gamepad.buttons & GameInputGamepadX) {
+                controller->current[GA_COIN] = true;
+            }
             if (gamepad.buttons & GameInputGamepadA) {
                 controller->current[GA_SPACE] = true;
             }
@@ -401,7 +408,7 @@ internal void input_update(IGameInput *IGame_input, GameInput *input)
                 controller->current[GA_Q] = true;
             }
             if (gamepad.buttons & GameInputGamepadRightShoulder) {
-                controller->current[GA_E] = true;
+                controller->current[GA_DASH] = true;
             }
 
             // 摇杆与扳机模拟量（原始值，死区与速度映射在游戏逻辑层处理）
@@ -1308,9 +1315,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     // ============================================================================
     AudioState audio = {};
     global_audio = &audio;
-    if (!audio_init(&audio)) {
+    bool audio_ready = audio_init(&audio);
+    if (!audio_ready) {
         // 音频不是运行的必需条件（例如没有输出设备），失败只降级为静音
         LOG_WARN("audio_init failed");
+    } else {
+        // 解析素材到 arena 常驻并起播背景音乐。
+        // 解析很贵，音频不可用时不做无意义的解析
+        game_audio_init(&audio);
     }
 
     D3D11_VIEWPORT viewport = {};

@@ -24,24 +24,94 @@ internal constexpr BusDesc BUS_TABLE[BUS_COUNT] = {
 };
 
 // ============================================================================
-// 池表：voice_count 为 0 表示不创建该池
-// 本轮所有资产都是程序生成的单声道，立体声池留待导入立体声音乐资产时启用：
-//   /* AUDIO_POOL_STEREO */ { 2, 16 }
+// 池表：池 = 允许的 voice 输入格式清单（声道数 + 采样率），voice_count 为 0 表示不创建
+// 资产采样率与池不一致时由 XAudio2 的 SRC 在源 voice 上完成转换，因此素材无需预处理
 // ============================================================================
 struct AudioPoolDesc
 {
     u16 channels;
+    u32 sample_rate;
     u32 voice_count;
 };
 
 internal constexpr AudioPoolDesc AUDIO_POOL_TABLE[AUDIO_POOL_COUNT] = {
-    /* AUDIO_POOL_MONO */   { 1, 32 },
-    /* AUDIO_POOL_STEREO */ { 2, 0 }  // 暂时禁用双声道池
+    /* AUDIO_POOL_MONO_48K   */ { 1, 48000, 8 },
+    /* AUDIO_POOL_STEREO_44K */ { 2, 44100, 8 },
+    /* AUDIO_POOL_STEREO_32K */ { 2, 32000, 4 },
 };
 
 internal inline void audio_error_log(const char *what, HRESULT hr)
 {
     LOG_ERROR("audio: %s failed (HRESULT 0x%08X)", what, (u32)hr);
+}
+
+// 本 SDK 的 IXAudio2SourceVoice::GetState 没有「非阻塞」标志；
+// 我们只需要 BuffersQueued，用这个标志省掉 SamplesPlayed 的统计开销
+internal constexpr UINT32 VOICE_STATE_FLAGS = XAUDIO2_VOICE_NOSAMPLESPLAYED;
+
+// 流式槽位的有效位掩码（槽位数远小于 64）
+internal constexpr u64 STREAM_VALID_MASK = (1ull << AUDIO_STREAM_COUNT) - 1;
+
+// ---------------------------------------------------------------------------
+// 共用小工具：池化播放与流式播放两条路径都复用
+// ---------------------------------------------------------------------------
+
+// 统一的源 voice 输入格式：交错 f32
+internal WAVEFORMATEX audio_make_float_format(u16 channels, u32 sample_rate)
+{
+    WAVEFORMATEX format = {};
+    format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+    format.nChannels = channels;
+    format.nSamplesPerSec = sample_rate;
+    format.wBitsPerSample = sizeof(f32) * 8;
+    format.nBlockAlign = (WORD)(format.nChannels * sizeof(f32));
+    format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
+    return format;
+}
+
+// 把源 voice 接到目标总线并设置输出矩阵：
+//   单声道源 -> 1×2 矩阵承载声像与距离衰减
+//   立体声源 -> 2×2 恒等矩阵（立体声素材无法真正摆位，增益统一走 SetVolume）
+// 矩阵索引公式为 pLevelMatrix[源声道 + 源声道数 * 目标声道]
+internal void audio_bind_output(IXAudio2Voice *voice, IXAudio2Voice *bus, u16 channels, f32 gain_l, f32 gain_r)
+{
+    XAUDIO2_SEND_DESCRIPTOR send = { 0, bus };
+    XAUDIO2_VOICE_SENDS sends = { 1, &send };
+    voice->SetOutputVoices(&sends);
+
+    if (channels == 1) {
+        f32 matrix[AUDIO_BUS_CHANNELS] = { gain_l, gain_r };
+        voice->SetOutputMatrix(nullptr, channels, AUDIO_BUS_CHANNELS, matrix);
+    } else {
+        assert(channels == AUDIO_BUS_CHANNELS);
+        constexpr f32 IDENTITY_MATRIX[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+        voice->SetOutputMatrix(nullptr, channels, AUDIO_BUS_CHANNELS, IDENTITY_MATRIX);
+    }
+}
+
+// 免锁位图占位：取最低空闲位并 CAS 置位；失败（位图已满）返回 false
+internal bool audio_bitmap_reserve(volatile LONG64 *bits_ptr, u64 valid_mask, u32 *out_index)
+{
+    LONG64 bits = *bits_ptr;
+    for (;;) {
+        u64 free_bits = (u64)~bits & valid_mask;
+        if (free_bits == 0) {
+            return false;
+        }
+
+        unsigned long bit_index = 0;
+        _BitScanForward64(&bit_index, free_bits);
+
+        LONG64 new_bits = bits | (LONG64)((u64)1 << bit_index);
+        LONG64 observed = InterlockedCompareExchange64(bits_ptr, new_bits, bits);
+        if (observed != bits) {
+            bits = observed; // 竞争失败，用最新值重试
+            continue;
+        }
+
+        *out_index = (u32)bit_index;
+        return true;
+    }
 }
 
 StereoGains audio_spatial_gains(f32 rel_x, f32 rel_y, f32 pan_width, f32 rolloff_radius, f32 min_gain)
@@ -100,15 +170,8 @@ internal void audio_start_voice(AudioState *audio, const AudioCommand *cmd)
     voice->FlushSourceBuffers();
     InterlockedExchange(&slot->retire_flag, 0);
 
-    // 把源 voice 接到目标总线上（池里的 voice 创建时不指定 send list，这里按播放请求改路由）
-    XAUDIO2_SEND_DESCRIPTOR send = { 0, audio->bus_voices[cmd->bus] };
-    XAUDIO2_VOICE_SENDS sends = { 1, &send };
-    voice->SetOutputVoices(&sends);
-
-    // 单声道源 -> 2 声道总线的输出矩阵，一次调用同时完成声像与距离衰减
-    assert(pool->channels == 1);
-    f32 matrix[AUDIO_BUS_CHANNELS] = { cmd->gain_l, cmd->gain_r };
-    voice->SetOutputMatrix(nullptr, pool->channels, AUDIO_BUS_CHANNELS, matrix);
+    // 把源 voice 接到目标总线并设置输出矩阵（池里的 voice 创建时不指定 send list）
+    audio_bind_output(voice, audio->bus_voices[cmd->bus], pool->channels, cmd->gain_l, cmd->gain_r);
     voice->SetVolume(cmd->volume);
     voice->SetFrequencyRatio(cmd->pitch);
 
@@ -159,7 +222,11 @@ internal void audio_apply_gains(AudioState *audio, AudioCommand *cmd)
         return; // 已过期或已播完
     }
 
-    assert(pool->channels == 1);
+    // 立体声资产的增益不参与声像（矩阵恒等），音量请用播放参数里的 volume
+    if (pool->channels != 1) {
+        return;
+    }
+
     f32 matrix[AUDIO_BUS_CHANNELS] = { cmd->gain_l, cmd->gain_r };
     slot->gain_l = cmd->gain_l;
     slot->gain_r = cmd->gain_r;
@@ -171,6 +238,162 @@ internal void audio_apply_bus_gain(AudioState *audio, AudioCommand *cmd)
     assert(cmd->bus < BUS_COUNT);
     audio->bus_gain[cmd->bus] = cmd->volume;
     audio->bus_voices[cmd->bus]->SetVolume(cmd->volume);
+}
+
+// ============================================================================
+// 流式播放（音频线程侧）：按块填充，一块播完由回调唤醒后再补下一块
+// ============================================================================
+
+// 结束一条流：停播、销毁 voice、关闭解码器、归还槽位
+// 顺序要求：close 必须在清位图之前，这样游戏线程看到槽位空闲时解码器一定已经关闭
+internal void audio_stream_release(AudioState *audio, u32 slot_index)
+{
+    AudioStreamSlot *slot = &audio->streams[slot_index];
+
+    if (slot->voice) {
+        slot->voice->Stop(0, XAUDIO2_COMMIT_NOW);
+        slot->voice->FlushSourceBuffers();
+        slot->voice->DestroyVoice();
+        slot->voice = nullptr;
+    }
+
+    if (slot->source.close) {
+        slot->source.close(slot->source.user);
+    }
+
+    slot->source = {};
+    slot->active = false;
+    slot->at_end = false;
+    slot->active_generation = 0;
+    InterlockedAnd64(&audio->stream_in_use_bits, ~((LONG64)((u64)1 << slot_index)));
+}
+
+// 把排队的数据块补到上限；返回 false 表示数据源已结束（没有更多数据）
+internal bool audio_stream_fill_queue(AudioStreamSlot *slot)
+{
+    XAUDIO2_VOICE_STATE state = {};
+    slot->voice->GetState(&state, VOICE_STATE_FLAGS);
+
+    // BuffersQueued 包含正在播放的那一块，所以「按完成数量轮转写块」绝不会覆盖正在读的块
+    u32 queued = state.BuffersQueued;
+    u32 chunk_floats = slot->source.chunk_frames * slot->source.channels;
+
+    while (queued < slot->source.chunk_count) {
+        f32 *dst = slot->source.chunk_buffer + (u64)slot->write_chunk * chunk_floats;
+
+        bool at_end = false;
+        u32 frames = slot->source.fill(slot->source.user, dst, slot->source.chunk_frames, &at_end);
+
+        if (frames > 0) {
+            XAUDIO2_BUFFER buffer = {};
+            buffer.AudioBytes = frames * slot->source.channels * sizeof(f32);
+            buffer.pAudioData = (const BYTE *)dst;
+            if (at_end) {
+                buffer.Flags = XAUDIO2_END_OF_STREAM;
+            }
+            slot->voice->SubmitSourceBuffer(&buffer);
+            slot->write_chunk = (slot->write_chunk + 1) % slot->source.chunk_count;
+            queued++;
+        }
+
+        if (at_end || frames == 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+internal void audio_start_stream(AudioState *audio, AudioCommand *cmd)
+{
+    AudioStreamSlot *slot = &audio->streams[cmd->slot];
+    const AudioStreamSource *source = &cmd->source;
+    assert(!slot->active);
+
+    // 流式 voice 按数据源格式临时创建（不池化，因此不受池格式表限制）
+    WAVEFORMATEX format = audio_make_float_format(source->channels, source->sample_rate);
+
+    HRESULT result = audio->engine->CreateSourceVoice(&slot->voice, &format, 0,
+                                                      XAUDIO2_DEFAULT_FREQ_RATIO, &slot->callback);
+    if (FAILED(result)) {
+        audio_error_log("CreateSourceVoice(stream)", result);
+        InterlockedAnd64(&audio->stream_in_use_bits, ~((LONG64)((u64)1 << cmd->slot)));
+        return;
+    }
+
+    audio_bind_output(slot->voice, audio->bus_voices[cmd->bus], source->channels, cmd->gain_l, cmd->gain_r);
+    slot->voice->SetVolume(cmd->volume);
+    slot->voice->SetFrequencyRatio(cmd->pitch);
+
+    slot->source = *source;
+    slot->bus = cmd->bus;
+    slot->volume = cmd->volume;
+    slot->write_chunk = 0;
+    slot->active = true;
+    slot->active_generation = cmd->generation;
+    InterlockedExchange(&slot->chunk_done_flag, 0);
+
+    slot->at_end = !audio_stream_fill_queue(slot);
+
+    XAUDIO2_VOICE_STATE state = {};
+    slot->voice->GetState(&state, VOICE_STATE_FLAGS);
+    if (state.BuffersQueued == 0) {
+        // 数据源一块数据都没给出（例如解码失败）：直接收摊
+        LOG_WARN("Audio: 流式数据源没有可播放数据，放弃本次流式播放");
+        audio_stream_release(audio, cmd->slot);
+        return;
+    }
+
+    slot->voice->Start(0, XAUDIO2_COMMIT_NOW);
+}
+
+internal void audio_stop_stream_now(AudioState *audio, AudioCommand *cmd)
+{
+    if (cmd->slot >= AUDIO_STREAM_COUNT) {
+        return;
+    }
+
+    AudioStreamSlot *slot = &audio->streams[cmd->slot];
+    // 世代不符说明句柄已过期（该槽位已被别的流复用），直接忽略
+    if (!slot->active || slot->active_generation != cmd->generation) {
+        return;
+    }
+
+    audio_stream_release(audio, cmd->slot);
+}
+
+// 流式槽位维护：补块，以及在流结束后回收
+internal void audio_service_streams(AudioState *audio)
+{
+    for (u32 i = 0; i < AUDIO_STREAM_COUNT; ++i) {
+        AudioStreamSlot *slot = &audio->streams[i];
+        if (!slot->active) {
+            continue;
+        }
+
+        // 回调置位只是为了唤醒；真实进度以 BuffersQueued 为准，
+        // 这样即使一次醒来时已经播完两块也不会算错
+        InterlockedExchange(&slot->chunk_done_flag, 0);
+
+        XAUDIO2_VOICE_STATE state = {};
+        slot->voice->GetState(&state, VOICE_STATE_FLAGS);
+
+        if (slot->at_end) {
+            if (state.BuffersQueued == 0) {
+                audio_stream_release(audio, i); // 尾块也播完了
+            }
+            continue;
+        }
+
+        if (state.BuffersQueued == 0) {
+            // 队列断流：一块有几十毫秒，正常不该发生；续上时通知 XAudio2 时间线不连续
+            slot->voice->Discontinuity();
+        }
+
+        if (!audio_stream_fill_queue(slot)) {
+            slot->at_end = true;
+        }
+    }
 }
 
 internal void audio_execute_command(AudioState *audio, AudioCommand *cmd)
@@ -187,6 +410,12 @@ internal void audio_execute_command(AudioState *audio, AudioCommand *cmd)
         break;
     case AUDIO_CMD_SET_BUS_GAIN:
         audio_apply_bus_gain(audio, cmd);
+        break;
+    case AUDIO_CMD_PLAY_STREAM:
+        audio_start_stream(audio, cmd);
+        break;
+    case AUDIO_CMD_STOP_STREAM:
+        audio_stop_stream_now(audio, cmd);
         break;
     }
 }
@@ -225,14 +454,15 @@ internal DWORD WINAPI audio_thread_proc(void *param)
     AudioState *audio = (AudioState *)param;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 
-    // 三条唤醒源：命令到达 / voice 播完 / 退出。
-    constexpr u32 WAIT_COUNT = 3;
-    HANDLE wait_handles[WAIT_COUNT] = { audio->cmd_event, audio->retire_event, audio->quit_event };
+    // 四条唤醒源：命令到达 / voice 播完 / 流式块播完 / 退出
+    constexpr u32 WAIT_COUNT = 4;
+    HANDLE wait_handles[WAIT_COUNT] = { audio->cmd_event, audio->retire_event, audio->chunk_event, audio->quit_event };
 
     while (audio->running) {
         WaitForMultipleObjects(WAIT_COUNT, wait_handles, FALSE, INFINITE); // 无限阻塞
         audio_process_commands(audio);
         audio_collect_retired(audio);
+        audio_service_streams(audio);
     }
 
     return 0;
@@ -306,14 +536,9 @@ internal bool audio_create_pools(AudioState *audio)
         pool->valid_mask = ~0ull >> (AUDIO_MAX_VOICES_PER_POOL - desc->voice_count);
         pool->in_use_bits = 0;
 
-        // f32 交错采样格式；创建时不指定 send list，播放时再按目标总线改路由
-        WAVEFORMATEX format = {};
-        format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
-        format.nChannels = (WORD)desc->channels;
-        format.nSamplesPerSec = audio->sample_rate;
-        format.wBitsPerSample = sizeof(f32) * 8;
-        format.nBlockAlign = (WORD)(format.nChannels * sizeof(f32));
-        format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
+        // 采样率取自池表（资产的原生采样率），与总线不同时由 XAudio2 在源 voice 内做 SRC；
+        // 创建时不指定 send list，播放时再按目标总线改路由
+        WAVEFORMATEX format = audio_make_float_format(desc->channels, desc->sample_rate);
 
         // 创建 voice
         for (u32 i = 0; i < desc->voice_count; ++i) {
@@ -328,6 +553,8 @@ internal bool audio_create_pools(AudioState *audio)
             slot->voice->SetVolume(1.0f);
             slot->generation = 0;
         }
+
+        LOG_DEBUG("Audio: voice pool create (%u channels %u Hz, %u voice count)", desc->channels, desc->sample_rate, desc->voice_count);
     }
 
     return true;
@@ -368,12 +595,21 @@ bool audio_init(AudioState *audio)
 
     audio->cmd_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     audio->retire_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    audio->chunk_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     audio->quit_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!audio->cmd_event || !audio->retire_event || !audio->quit_event) {
+    if (!audio->cmd_event || !audio->retire_event || !audio->chunk_event || !audio->quit_event) {
         LOG_ERROR("audio: CreateEventW failed");
         return false;
     }
+
     audio->callback.retire_event = audio->retire_event;
+    audio->stream_in_use_bits = 0;
+    audio->stream_generation_counter = 0;
+    for (u32 i = 0; i < AUDIO_STREAM_COUNT; ++i) {
+        // 每个流式槽位一个回调对象（地址稳定），回调只需知道自己的标志位
+        audio->streams[i].callback.chunk_done_flag = &audio->streams[i].chunk_done_flag;
+        audio->streams[i].callback.chunk_event = audio->chunk_event;
+    }
 
     audio->running = true;
     audio->audio_thread = CreateThread(nullptr, 0, audio_thread_proc, audio, 0, nullptr);
@@ -401,6 +637,13 @@ void audio_shutdown(AudioState *audio)
         audio->audio_thread = nullptr;
     }
 
+    // 流式 voice 与解码器状态：必须在关事件句柄之前清理（销毁 voice 仍可能触发回调）
+    for (u32 i = 0; i < AUDIO_STREAM_COUNT; ++i) {
+        if (audio->streams[i].active) {
+            audio_stream_release(audio, i);
+        }
+    }
+
     // 销毁源 voice 时仍可能触发 OnBufferEnd，所以 retire_event 必须等这里做完再关
     for (u32 p = 0; p < AUDIO_POOL_COUNT; ++p) {
         AudioVoicePool *pool = &audio->pools[p];
@@ -421,25 +664,23 @@ void audio_shutdown(AudioState *audio)
         }
     }
 
-    if (audio->cmd_event) {
-        CloseHandle(audio->cmd_event);
-        audio->cmd_event = nullptr;
-    }
-    if (audio->retire_event) {
-        CloseHandle(audio->retire_event);
-        audio->retire_event = nullptr;
-    }
-    if (audio->quit_event) {
-        CloseHandle(audio->quit_event);
-        audio->quit_event = nullptr;
-    }
+#define SAFE_CLOSE(_event) if (_event) { CloseHandle(_event); _event = nullptr; }
+
+    SAFE_CLOSE(audio->cmd_event);
+    SAFE_CLOSE(audio->retire_event);
+    SAFE_CLOSE(audio->chunk_event);
+    SAFE_CLOSE(audio->quit_event);
+
+#undef SAFE_CLOSE
 
     audio->callback.retire_event = nullptr;
+    for (u32 i = 0; i < AUDIO_STREAM_COUNT; ++i) {
+        audio->streams[i].callback.chunk_event = nullptr;
+        audio->streams[i].callback.chunk_done_flag = nullptr;
+    }
 
     audio->engine->Release();
     audio->engine = nullptr;
-
-    LOG_DEBUG("Audio: 已关闭");
 }
 
 // ============================================================================
@@ -463,49 +704,54 @@ internal bool audio_push_command(AudioState *audio, const AudioCommand *cmd)
     return true;
 }
 
+// 按资产格式查池：voice 的输入格式创建后固定，所以必须精确匹配声道数与采样率
+internal i32 audio_find_pool(AudioState *audio, u16 channels, u32 sample_rate)
+{
+    for (u32 i = 0; i < AUDIO_POOL_COUNT; ++i) {
+        AudioVoicePool *pool = &audio->pools[i];
+        if (pool->count > 0 && pool->channels == channels && AUDIO_POOL_TABLE[i].sample_rate == sample_rate) {
+            return (i32)i;
+        }
+    }
+    return -1;
+}
+
 // 用原子位图占位：免锁的 free list，游戏线程拿到槽位后立刻就能返回有效句柄
 internal bool audio_pool_reserve(AudioState *audio, u32 pool_index, SoundHandle *out_handle)
 {
     AudioVoicePool *pool = &audio->pools[pool_index];
-    LONG64 bits = pool->in_use_bits;
 
-    for (;;) {
-        u64 free_bits = (u64)~bits & pool->valid_mask;
-        if (free_bits == 0) {
-            return false; // 池已满
-        }
-
-        unsigned long bit_index = 0;
-        _BitScanForward64(&bit_index, free_bits);
-
-        LONG64 new_bits = bits | (LONG64)((u64)1 << bit_index);
-        LONG64 observed = InterlockedCompareExchange64(&pool->in_use_bits, new_bits, bits);
-        if (observed != bits) {
-            bits = observed; // 竞争失败，用最新值重试
-            continue;
-        }
-
-        // generation 只有游戏线程会写，因此这里不需要任何同步
-        u32 generation = ++audio->generation_counter;
-        pool->slots[bit_index].generation = generation;
-
-        out_handle->pool = pool_index;
-        out_handle->slot = (u32)bit_index;
-        out_handle->generation = generation;
-        return true;
+    u32 slot_index = 0;
+    if (!audio_bitmap_reserve(&pool->in_use_bits, pool->valid_mask, &slot_index)) {
+        return false; // 池已满
     }
+
+    // generation 只有游戏线程会写，因此这里不需要任何同步
+    u32 generation = ++audio->generation_counter;
+    pool->slots[slot_index].generation = generation;
+
+    out_handle->pool = pool_index;
+    out_handle->slot = slot_index;
+    out_handle->generation = generation;
+    return true;
 }
 
 SoundHandle audio_play(AudioState *audio, SoundAsset *asset, AudioPlayParams *params)
 {
     SoundHandle handle = {};
-    if (!asset || asset->sample_count == 0) {
+    if (!audio || !audio->engine || !asset || asset->sample_count == 0) {
         return handle;
     }
-    assert(asset->sample_rate == audio->sample_rate);
-    assert(asset->channels == 1); // 本轮只有单声道池
 
-    if (!audio_pool_reserve(audio, AUDIO_POOL_MONO, &handle)) {
+    // 按资产格式选池：voice 的输入格式创建时固定，所以必须精确匹配（声道数 + 采样率）
+    i32 pool_index = audio_find_pool(audio, asset->channels, asset->sample_rate);
+    if (pool_index < 0) {
+        LOG_ERROR("Audio: 没有匹配 (%u 声道 %u Hz) 的 voice 池，请在 AUDIO_POOL_TABLE 中新增一行",
+                  (u32)asset->channels, asset->sample_rate);
+        return handle;
+    }
+
+    if (!audio_pool_reserve(audio, (u32)pool_index, &handle)) {
         LOG_WARN("Audio: voice 池已满，丢弃本次播放请求");
         handle = {};
         return handle;
@@ -530,7 +776,7 @@ SoundHandle audio_play(AudioState *audio, SoundAsset *asset, AudioPlayParams *pa
 
 bool audio_is_playing(AudioState *audio, SoundHandle handle)
 {
-    if (handle.generation == 0) {
+    if (!audio || !audio->engine || handle.generation == 0) {
         return false;
     }
 
@@ -548,7 +794,7 @@ bool audio_is_playing(AudioState *audio, SoundHandle handle)
 
 void audio_stop(AudioState *audio, SoundHandle handle)
 {
-    if (handle.generation == 0) {
+    if (!audio || !audio->engine || handle.generation == 0) {
         return;
     }
 
@@ -562,7 +808,7 @@ void audio_stop(AudioState *audio, SoundHandle handle)
 
 void audio_set_voice_gains(AudioState *audio, SoundHandle handle, f32 gain_l, f32 gain_r)
 {
-    if (handle.generation == 0) {
+    if (!audio || !audio->engine || handle.generation == 0) {
         return;
     }
 
@@ -578,10 +824,92 @@ void audio_set_voice_gains(AudioState *audio, SoundHandle handle, f32 gain_l, f3
 
 void audio_set_bus_gain(AudioState *audio, BusId bus, f32 gain)
 {
+    if (!audio || !audio->engine) {
+        return;
+    }
+
     assert(bus < BUS_COUNT);
     AudioCommand cmd = {};
     cmd.kind = AUDIO_CMD_SET_BUS_GAIN;
     cmd.bus = bus;
     cmd.volume = gain;
+    audio_push_command(audio, &cmd);
+}
+
+// ============================================================================
+// 流式播放（游戏线程）
+// ============================================================================
+
+// 与 voice 池同样的免锁占位，只是规模小得多
+internal bool audio_stream_reserve(AudioState *audio, AudioStreamHandle *out_handle)
+{
+    u32 slot_index = 0;
+    if (!audio_bitmap_reserve(&audio->stream_in_use_bits, STREAM_VALID_MASK, &slot_index)) {
+        return false;
+    }
+
+    u32 generation = ++audio->stream_generation_counter;
+    audio->streams[slot_index].generation = generation;
+
+    out_handle->slot = slot_index;
+    out_handle->generation = generation;
+    return true;
+}
+
+AudioStreamHandle audio_play_stream(AudioState *audio, AudioStreamSource *source, AudioPlayParams *params)
+{
+    AudioStreamHandle handle = {};
+    if (!audio || !audio->engine || !source || !source->fill || !source->chunk_buffer) {
+        return handle;
+    }
+    if (source->chunk_frames == 0 || source->chunk_count == 0 || source->channels == 0) {
+        assert(false); // 数据源描述不合法
+        return handle;
+    }
+
+    if (!audio_stream_reserve(audio, &handle)) {
+        LOG_WARN("Audio: 流式槽位已满，丢弃本次流式播放请求");
+        return handle;
+    }
+
+    AudioCommand cmd = {};
+    cmd.kind = AUDIO_CMD_PLAY_STREAM;
+    cmd.slot = handle.slot;
+    cmd.generation = handle.generation;
+    cmd.bus = params->bus;
+    cmd.volume = params->volume;
+    cmd.pitch = params->pitch;
+    cmd.gain_l = params->gains.left;
+    cmd.gain_r = params->gains.right;
+    cmd.source = *source; // 按值拷贝：调用方不必保证描述结构的生命周期
+    audio_push_command(audio, &cmd);
+
+    return handle;
+}
+
+bool audio_is_stream_playing(AudioState *audio, AudioStreamHandle handle)
+{
+    if (!audio || !audio->engine || handle.generation == 0) {
+        return false;
+    }
+
+    u64 bits = (u64)InterlockedOr64(&audio->stream_in_use_bits, 0);
+    if ((bits & ((u64)1 << handle.slot)) == 0) {
+        return false;
+    }
+
+    return audio->streams[handle.slot].generation == handle.generation;
+}
+
+void audio_stop_stream(AudioState *audio, AudioStreamHandle handle)
+{
+    if (!audio || !audio->engine || handle.generation == 0) {
+        return;
+    }
+
+    AudioCommand cmd = {};
+    cmd.kind = AUDIO_CMD_STOP_STREAM;
+    cmd.slot = handle.slot;
+    cmd.generation = handle.generation;
     audio_push_command(audio, &cmd);
 }

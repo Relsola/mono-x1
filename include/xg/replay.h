@@ -6,7 +6,7 @@
 // 录制回放调试
 // ============================================================================
 
-// 录制文件魔数 "RPLY" 与版本号
+// 录制文件魔数 "RPLY"
 inline constexpr wchar_t REPLAY_FILE_NAME[] = L"build/replay.bin";
 inline constexpr u32 REPLAY_MAGIC = 0x52504C59;
 
@@ -17,6 +17,13 @@ struct ReplayState
     f32 player_y;
     v2 velocity;
     Camera2D camera;
+
+    // 冲刺状态机
+    PlayerFacing facing;
+    PlayerState state;
+    f32 dash_timer;
+    f32 dash_cooldown;
+    f32 dash_dir_x;
 };
 
 // 每个固定逻辑步记录的输入快照
@@ -72,6 +79,11 @@ internal void replay_start_recording(ReplayRecorder *recorder, const GameState *
     recorder->initial_state.player_y = game_state->player_y;
     recorder->initial_state.velocity = game_state->velocity;
     recorder->initial_state.camera = game_state->camera;
+    recorder->initial_state.facing = game_state->facing;
+    recorder->initial_state.state = game_state->state;
+    recorder->initial_state.dash_timer = game_state->dash_timer;
+    recorder->initial_state.dash_cooldown = game_state->dash_cooldown;
+    recorder->initial_state.dash_dir_x = game_state->dash_dir_x;
 
     // 首次分配 4096 帧
     recorder->frames = init<ReplayInputFrame>(4096);
@@ -146,7 +158,7 @@ internal bool replay_load(ReplayRecorder *recorder, const wchar_t *filename)
     memcpy(&header, cursor, sizeof(header));
     cursor += sizeof(header);
 
-    // 校验魔数、版本、状态结构与帧结构大小
+    // 校验魔数、状态结构与帧结构大小
     if (header.magic != REPLAY_MAGIC ||
         header.state_size != sizeof(ReplayState) ||
         header.frame_size != sizeof(ReplayInputFrame)) {
@@ -178,6 +190,11 @@ internal void replay_state_to_game(ReplayState *state, GameState *game_state)
     game_state->player_y = state->player_y;
     game_state->velocity = state->velocity;
     game_state->camera = state->camera;
+    game_state->facing = state->facing;
+    game_state->state = state->state;
+    game_state->dash_timer = state->dash_timer;
+    game_state->dash_cooldown = state->dash_cooldown;
+    game_state->dash_dir_x = state->dash_dir_x;
 }
 
 // 开始回放

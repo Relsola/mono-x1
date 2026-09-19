@@ -104,10 +104,6 @@ struct ReadFileRes
     void *contents;
 };
 
-ReadFileRes read_file(const wchar_t *filename);
-bool write_file(const wchar_t *filename, u32 size, void *memory, bool append = false);
-void free_file_memory(void *memory);
-
 // 临时线性分配
 struct ScratchArena
 {
@@ -124,6 +120,10 @@ void scratch_shutdown(ScratchArena *arena);
 void scratch_reset(ScratchArena *arena);
 void *scratch_push(ScratchArena *arena, u64 size);
 void *scratch_realloc(ScratchArena *arena, void *p, u64 oldsz, u64 newsz);
+
+ReadFileRes read_file(const wchar_t *filename);
+bool write_file(const wchar_t *filename, u32 size, void *memory, bool append = false);
+void free_file_memory(void *memory);
 
 // ============================================================================
 // 动态数组
@@ -178,9 +178,10 @@ enum GameAction : u8
     GA_RIGHT, // 右移动
     GA_UP,    // 上移动
     GA_DOWN,  // 下移动
-    GA_Q,     // 放大
-    GA_E,     // 缩小
+    GA_Q,     // 放大相机
     GA_SPACE, // 跳跃
+    GA_COIN,  // 拾取 / 交互（键盘 E + 手柄 A）
+    GA_DASH,  // 冲刺（键盘 F + 手柄右肩）
     GA_COUNT  // 动作总数
 };
 
@@ -307,6 +308,24 @@ struct Camera2D
     f32 zoom = 1.0f; // 视野缩放（1.0 = 原比例，>1.0 放大，<1.0 缩小拉远）
 };
 
+// 角色朝向
+enum PlayerFacing : u8
+{
+    FACE_LEFT,
+    FACE_RIGHT,
+    FACE_COUNT
+};
+
+// 角色状态：跳跃与受击等状态后续再补
+enum PlayerState : u8
+{
+    PSTATE_IDLE, // 站立
+    PSTATE_RUN,  // 移动
+    PSTATE_DASH, // 冲刺中
+    PSTATE_JUMP, // 跳跃
+    PSTATE_COUNT
+};
+
 // 固定逻辑步长 60Hz，所有游戏逻辑（移动/碰撞等）都以固定的 dt 推进，
 inline constexpr f32 FIXED_TIMESTEP = 1.0f / 60.0f;
 // 最大累积 15 步，防止死亡螺旋
@@ -323,6 +342,13 @@ struct GameState
     f32 prev_player_y = 0.0f;
 
     v2 velocity = {};
+
+    // 朝向与动作状态
+    PlayerFacing facing = FACE_RIGHT;
+    PlayerState state = PSTATE_IDLE;
+    f32 dash_timer = 0.0f;    // 冲刺剩余时间
+    f32 dash_cooldown = 0.0f; // 冲刺冷却剩余时间
+    f32 dash_dir_x = 1.0f;    // 冲刺方向（水平，启动瞬间锁定）
 
     Camera2D camera = {};
     Camera2D prev_camera = {}; // 上一逻辑步的摄像机，用于渲染插值
