@@ -1,0 +1,106 @@
+# ============================================================
+# 大地图 UI 回归：开图 → 世界暂停 → 选项 → 确认传送 → 关图 → 传回 → 鼠标
+# 候选项 = **所有世界的传送点**（两张图各摆 2 个，都站在地面上 ⇒ 列表 4 项）：
+#   item 0 = `FIRST 1`  (544,  -1408)（脚底坐标）   item 1 = `FIRST 2`  (1056, -1408)
+#   item 2 = `SECOND 1` (800,  -1408)               item 3 = `SECOND 2` (1312, -1408)
+# 四个落点互不相同、而且跨世界 —— 所以「选中项 → 落点」这条链每个 item 都能单独验。
+# 验证：
+#   ①GA_MAP（Esc）开图：世界**完全暂停** —— 按住**冲刺**（F）也一格不动（「打开 = 世界暂停」的直接证据）。
+#     用冲刺而不是方向键：方向键在图里有含义（改选中项），两者混在一起就分不清是哪一个在起作用
+#   ②图内方向键改的是**选中项**：不确认就不传送
+#   ③GA_JUMP 确认 = 落到选中传送点的脚底位置（本世界内与跨世界都验到）
+#   ④鼠标：悬停即选项、左键落在某项上 = 确认；停在列表外点一下什么都不做
+#   ⑤开图时选中项对齐到**当前世界的第一个传送点**（所以关掉再开，光标还在我这一屏）
+# 两个刻意的依赖，改键位/词表/布局/传送点时都要一起看：
+#   - **鼠标坐标是客户区像素**，而列表按客户区尺寸居中排：下面这些坐标按默认全屏（3840x2160、
+#     ui_scale = 3）算出 —— 项宽 960、项高 264、间距 48、4 项整列高 1200，所以顶边 y = 480；
+#     x 都是 1440..2400，item 0..3 依次覆盖 y 480..744 / 792..1056 / 1104..1368 / 1416..1680。
+#     换显示器分辨率或给 main.exe 加 `--window` 之后这些数字必须重新算（实测过：加
+#     `--window 1280x720` 跑本用例必挂，因为客户区尺寸变了）
+#   - 标签是「世界名 + 序号」：世界名来自 game_world_name，序号来自数组下标（资产里没有字符串）
+# 运行：build\main.exe input_script test\ui_map.txt（在仓库根启动）
+# 帧号与坐标与关卡强耦合：改传送点 / 改按键 / 改落点后必须重新取样（F7）
+# ============================================================
+
+# 第一条非注释语句必须是存档点：spawn = 不读档，从关卡出生点跑起
+save spawn
+
+# --- 0. 出生点：第一世界，站在地面上 ---
+0     assert_world    FIRST
+0     assert_grounded 1
+5     assert_pos      288   -1345    2
+
+# --- 1. 开图，然后按住冲刺六十帧：位置必须一格不动（不暂停的话冲一下就是 240px）---
+40    press   MAP
+44    release MAP
+50    press   DASH
+110   assert_world    FIRST
+110   assert_pos      288   -1345    2
+120   release DASH
+
+# --- 2. 方向键往下选一项（FIRST 2），但不确认：不该传送 ---
+130   assert_world    FIRST
+140   press   DOWN
+144   release DOWN
+155   assert_world    FIRST
+155   assert_pos      288   -1345    2
+
+# --- 3. 确认：落到**本世界**的第二个传送点 ---
+160   press   JUMP
+164   release JUMP
+175   assert_world    FIRST
+190   assert_grounded 1
+190   assert_pos      1056  -1345    2
+
+# --- 4. 再开图（光标对齐到 FIRST 的第一个点），往右走两格到 `SECOND 1`，确认 ---
+210   press   MAP
+214   release MAP
+220   press   RIGHT
+224   release RIGHT
+230   press   RIGHT
+234   release RIGHT
+250   press   JUMP
+254   release JUMP
+265   assert_world    SECOND
+280   assert_grounded 1
+280   assert_pos      800   -1345    2
+
+# --- 5. 再开图（光标对齐到 SECOND 的第一个点 = item 2），往下走一格到 `SECOND 2`，确认 ---
+310   press   MAP
+314   release MAP
+320   press   DOWN
+324   release DOWN
+340   press   JUMP
+344   release JUMP
+355   assert_world    SECOND
+370   assert_grounded 1
+370   assert_pos      1312  -1345    2
+
+# --- 6. 鼠标：开图（光标在 item 2）→ 悬停到 item 1（`FIRST 2`）→ 左键确认（跨世界传回）---
+400   press   MAP
+404   release MAP
+410   mouse_move 1920 924
+420   mouse_press left
+424   mouse_release left
+440   assert_world    FIRST
+455   assert_grounded 1
+455   assert_pos      1056  -1345    2
+
+# --- 7. 再开图 → 鼠标先悬停 item 0、再移到列表外点一下：世界与位置都不该变 ---
+# （悬停过 item 0，所以这一下如果被当成“确认”就会传到 544）
+480   press   MAP
+484   release MAP
+490   mouse_move 1920 612
+500   mouse_move 1920 1900
+510   mouse_press left
+514   mouse_release left
+535   assert_world    FIRST
+535   assert_pos      1056  -1345    2
+
+# --- 8. 鼠标点回 item 0：同一个世界里的另一个传送点 ---
+560   mouse_move 1920 612
+570   mouse_press left
+574   mouse_release left
+590   assert_world    FIRST
+605   assert_grounded 1
+605   assert_pos      544   -1345    2

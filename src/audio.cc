@@ -1,6 +1,177 @@
 #include "audio.h"
-#include "logger.h"
+#include "shared/memory.h"
+#include "shared/logger.h"
+#include "shared/mono_math.h"
 
+#include "win32_prefix.h"
+#include <xaudio2.h>
+#include <new> // placement new：在 arena 原始内存上构造对象
+
+// ============================================================================
+// 容量常量（实现细节：不对外暴露，改它们不影响任何调用方）
+// ============================================================================
+
+// 每池最多 64 个 voice，与 64 位占用位图一一对应
+internal constexpr u32 AUDIO_MAX_VOICES_PER_POOL = 64;
+// 流式播放槽位数（背景音乐 + 预留，可同时存在多条流）
+internal constexpr u32 AUDIO_STREAM_COUNT = 2;
+// 环形命令队列最大容量
+internal constexpr u32 AUDIO_CMD_RING_CAP = 512;
+// 队列最大长度掩码
+internal constexpr u32 AUDIO_CMD_RING_MASK = AUDIO_CMD_RING_CAP - 1;
+
+// ============================================================================
+// 内部数据布局
+//
+// 这里出现 XAudio2 / COM / Win32 类型（IXAudio2*、HANDLE、回调接口继承），
+// 公共头 audio.h 只有一个前向声明，所以这些东西全锁在本编译单元内：
+// 换平台时替换本文件即可，调用方一行不用动。
+//
+// AudioVoiceSlot 字段所有权：
+//   游戏线程独占写     generation
+//   音频线程独占读写   voice / asset / active_generation / retire_flag / volume / gain_l / gain_r
+//   两线程共同访问     AudioVoicePool::in_use_bits（游戏线程置位，音频线程清位）
+// ============================================================================
+
+// 实例层：池中固定数组的槽位，地址恒定，可直接当回调上下文
+struct AudioVoiceSlot
+{
+    IXAudio2SourceVoice *voice;
+    SoundAsset *asset;
+    volatile LONG retire_flag; // 混音线程置位，音频线程消费并清位
+    u32 active_generation;     // 音频线程记录的当前播放世代，用于校验过期的 stop / set_gains
+    u32 generation;            // 游戏线程在占位时自增写入
+    f32 volume;                // 当前音量
+    f32 gain_l;                // 左增益
+    f32 gain_r;                // 右增益
+};
+
+struct AudioVoicePool
+{
+    AudioVoiceSlot slots[AUDIO_MAX_VOICES_PER_POOL];
+    u32 count;
+    u16 channels;
+    u64 valid_mask;              // 低 count 位有效，用于在位图里做边界裁剪
+    volatile LONG64 in_use_bits; // 1 = 已占用
+};
+
+// 流式 voice 的回调：与池化 voice 的回调分开，互不干扰
+struct AudioStreamCallback : IXAudio2VoiceCallback
+{
+    volatile LONG *chunk_done_flag = nullptr; // 指向所属槽位的标志位
+    HANDLE chunk_event = nullptr;
+
+    void __stdcall OnVoiceProcessingPassStart(UINT32) override {}
+    void __stdcall OnVoiceProcessingPassEnd() override {}
+    void __stdcall OnStreamEnd() override {}
+    void __stdcall OnBufferStart(void *) override {}
+    void __stdcall OnLoopEnd(void *) override {}
+    void __stdcall OnVoiceError(void *, HRESULT) override {}
+
+    void __stdcall OnBufferEnd(void *) override
+    {
+        // 在混音线程上执行：只置位 + 唤醒音频线程补块
+        InterlockedExchange(chunk_done_flag, 1);
+        SetEvent(chunk_event);
+    }
+};
+
+// 流式播放槽位：voice 在流开始时创建、结束时销毁。
+// 之所以不池化：格式由数据源决定（不必受池格式表约束），且流是长时间存在的少数对象，
+// 创建/销毁（含会阻塞的 DestroyVoice）都发生在音频线程上，不影响游戏线程
+struct AudioStreamSlot
+{
+    AudioStreamCallback callback; // 每槽一个，地址稳定
+    IXAudio2SourceVoice *voice;
+    AudioStreamSource source;      // 从命令拷贝过来的数据源描述
+    volatile LONG chunk_done_flag; // 混音线程置位：有块播完了
+    BusId bus;
+    u32 generation;        // 游戏线程在占位时写入
+    u32 active_generation; // 音频线程记录的当前世代
+    u32 write_chunk;       // 环形块缓冲的写入下标（音频线程独占）
+    f32 volume;
+    bool active;
+    bool at_end; // 数据源已结束，等尾块播完即可回收
+};
+
+// 命令层：游戏线程 -> 音频线程的无锁单生产者单消费者环形队列
+enum AudioCmdKind : u8
+{
+    AUDIO_CMD_PLAY,
+    AUDIO_CMD_STOP,
+    AUDIO_CMD_SET_GAINS,
+    AUDIO_CMD_SET_BUS_GAIN,
+    AUDIO_CMD_PLAY_STREAM,
+    AUDIO_CMD_STOP_STREAM,
+};
+
+struct AudioCommand
+{
+    AudioCmdKind kind;
+    BusId bus;
+    u32 pool;
+    u32 slot;
+    u32 generation;
+    SoundAsset *asset;
+    f32 volume;
+    f32 pitch;
+    f32 gain_l;
+    f32 gain_r;
+    bool loop;
+    AudioStreamSource source; // 仅流式命令使用（按值拷贝，调用方不必保证描述结构的生命周期）
+};
+
+// XAudio2 混音线程回调：只允许「置标志 + 唤醒音频线程」，其余一律交给音频线程处理
+// 回调里严禁调用 XAudio2 API、加锁、分配内存
+struct AudioVoiceCallback : IXAudio2VoiceCallback
+{
+    HANDLE retire_event = nullptr; // 由 audio_init 在创建音频线程时填充
+
+    void __stdcall OnVoiceProcessingPassStart(UINT32) override {}
+    void __stdcall OnVoiceProcessingPassEnd() override {}
+    void __stdcall OnStreamEnd() override {}
+    void __stdcall OnBufferStart(void *) override {}
+    void __stdcall OnLoopEnd(void *) override {}
+    void __stdcall OnVoiceError(void *, HRESULT) override {}
+
+    void __stdcall OnBufferEnd(void *buffer_context) override
+    {
+        AudioVoiceSlot *slot = (AudioVoiceSlot *)buffer_context;
+        InterlockedExchange(&slot->retire_flag, 1);
+        SetEvent(retire_event);
+    }
+};
+
+// 音频系统全部状态。零初始化后由 audio_init 填充；
+// 游戏线程侧（命令队列）与音频线程侧（事件句柄）的字段分区排列。
+struct AudioState
+{
+    IXAudio2 *engine;
+    IXAudio2Voice *bus_voices[BUS_COUNT];
+    f32 bus_gain[BUS_COUNT];                     // 各总线相对父级的音量
+    AudioVoicePool pools[AUDIO_POOL_COUNT];      // voice 池（按格式划分）
+    AudioStreamSlot streams[AUDIO_STREAM_COUNT]; // 流式槽位（BGM 等长音频）
+    AudioVoiceCallback callback;                 // 必须常驻且地址稳定，XAudio2 不会替我们持有它
+
+    u32 sample_rate; // 总线与 mastering 的采样率
+
+    // 游戏线程侧：无锁命令队列
+    AudioCommand cmd_ring[AUDIO_CMD_RING_CAP];
+    volatile LONG cmd_head;          // 消费者（音频线程）读取位置
+    volatile LONG cmd_tail;          // 生产者（游戏线程）写入位置
+    volatile LONG dropped_cmd_count; // 丢弃的命令（诊断信号）
+    u32 generation_counter;
+    volatile LONG64 stream_in_use_bits; // 流式槽位占用位图（游戏线程置位，音频线程清位）
+    u32 stream_generation_counter;      // 流式句柄的世代计数（只有游戏线程写）
+
+    // 音频线程侧
+    HANDLE audio_thread;
+    HANDLE cmd_event;
+    HANDLE retire_event;
+    HANDLE chunk_event; // 流式：某一块播完了，需要补块
+    HANDLE quit_event;
+    volatile bool running;
+};
 
 // ============================================================================
 // 总线表：数组顺序即创建顺序，父总线必须排在子总线之前
@@ -18,9 +189,9 @@ internal constexpr BusDesc BUS_TABLE[BUS_COUNT] = {
     /* BUS_MUSIC         */ { BUS_MASTER, 0.70f },
     /* BUS_UI            */ { BUS_MASTER, 1.00f },
     /* BUS_SFX           */ { BUS_MASTER, 0.70f },
-    /* BUS_SFX_AMBIENCE  */ { BUS_SFX,    1.00f },
-    /* BUS_SFX_CHARACTER */ { BUS_SFX,    1.00f },
-    /* BUS_SFX_IMPACT    */ { BUS_SFX,    1.00f },
+    /* BUS_SFX_AMBIENCE  */ { BUS_SFX, 1.00f },
+    /* BUS_SFX_CHARACTER */ { BUS_SFX, 1.00f },
+    /* BUS_SFX_IMPACT    */ { BUS_SFX, 1.00f },
 };
 
 // ============================================================================
@@ -118,7 +289,7 @@ StereoGains audio_spatial_gains(f32 rel_x, f32 rel_y, f32 pan_width, f32 rolloff
 {
     // 水平偏移映射到 [-1, 1] 的 pan 值
     f32 pan = rel_x / pan_width;
-    pan = MIN(MAX(pan, -1.0f), 1.0f);
+    pan = clamp(pan, -1.0f, 1.0f);
 
     // pan ∈ [-1, 1] 映射到 theta ∈ [0, π/2]
     f32 theta = (pan + 1.0f) * 0.25f * PI;
@@ -560,7 +731,7 @@ internal bool audio_create_pools(AudioState *audio)
     return true;
 }
 
-bool audio_init(AudioState *audio)
+internal bool audio_init(AudioState *audio)
 {
     HRESULT result = XAudio2Create(&audio->engine);
     if (FAILED(result)) {
@@ -622,8 +793,9 @@ bool audio_init(AudioState *audio)
     return true;
 }
 
-void audio_shutdown(AudioState *audio)
+void audio_destroy(AudioState *audio)
 {
+    // 对 nullptr 与半初始化状态都安全：初始化中途失败时也靠它收拾残局
     if (!audio || !audio->engine) {
         return;
     }
@@ -683,6 +855,23 @@ void audio_shutdown(AudioState *audio)
     audio->engine = nullptr;
 }
 
+AudioState *audio_create()
+{
+    // 必须在原始内存上「构造」对象，不能写 *audio = {}：
+    //   回调对象从 COM 接口（IXAudio2VoiceCallback）继承，虚表指针不是数据成员，
+    //   拷贝赋值不会写它 —— 用赋值只会留下 arena 里那一片全零的虚表指针，
+    //   于是 XAudio2 在混音线程上回调 OnBufferEnd 时跳空崩溃（崩在 xaudio2_9.dll 里）。
+    // AudioState() 是值初始化：先清零整个对象，再跑隐式默认构造（建立虚表）。
+    AudioState *audio = new (arena_push(sizeof(AudioState))) AudioState();
+
+    if (!audio_init(audio)) {
+        // 初始化到一半失败：把已经建起来的 voice 与句柄收干净，不把半成品交出去
+        audio_destroy(audio);
+        return nullptr;
+    }
+    return audio;
+}
+
 // ============================================================================
 // 播放控制（游戏线程）
 // ============================================================================
@@ -705,12 +894,12 @@ internal bool audio_push_command(AudioState *audio, const AudioCommand *cmd)
 }
 
 // 按资产格式查池：voice 的输入格式创建后固定，所以必须精确匹配声道数与采样率
-internal i32 audio_find_pool(AudioState *audio, u16 channels, u32 sample_rate)
+internal int audio_find_pool(AudioState *audio, u16 channels, u32 sample_rate)
 {
     for (u32 i = 0; i < AUDIO_POOL_COUNT; ++i) {
         AudioVoicePool *pool = &audio->pools[i];
         if (pool->count > 0 && pool->channels == channels && AUDIO_POOL_TABLE[i].sample_rate == sample_rate) {
-            return (i32)i;
+            return (int)i;
         }
     }
     return -1;
@@ -744,7 +933,7 @@ SoundHandle audio_play(AudioState *audio, SoundAsset *asset, AudioPlayParams *pa
     }
 
     // 按资产格式选池：voice 的输入格式创建时固定，所以必须精确匹配（声道数 + 采样率）
-    i32 pool_index = audio_find_pool(audio, asset->channels, asset->sample_rate);
+    int pool_index = audio_find_pool(audio, asset->channels, asset->sample_rate);
     if (pool_index < 0) {
         LOG_ERROR("Audio: 没有匹配 (%u 声道 %u Hz) 的 voice 池，请在 AUDIO_POOL_TABLE 中新增一行",
                   (u32)asset->channels, asset->sample_rate);

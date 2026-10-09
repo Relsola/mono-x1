@@ -1,0 +1,70 @@
+# ============================================================
+# 可消失平台（会消失的桥）回归：第一世界第三个坑（第 22 行第 48-56 列）
+#   连续踩住 10 个逻辑步（≈0.17s）→ 变暗预告 2s（还能站）→ 消失（不可碰撞）→ 掉出关卡重生 → 再过 2s 恢复实体
+#   预告期**不可回退**：踩上（够帧数）就一定会消失，离开（甚至跳开）都不重置倒计时
+#   实测时序（两个时长对称，各 120 帧）：step 388 是第一个“踩空”的帧（→GONE 就在这一步）
+#     → 往前推 120 = 268 进预告期（连续踩住的第 10 帧），往后 120 = 508 恢复 SOLID
+#   改 VANISH_WARNING_SECONDS / VANISH_GONE_SECONDS / VANISH_HOLD_FRAMES 后这些数都要重测
+#   运行：build\main.exe input_script test\vanish_bridge.txt（在仓库根启动）
+#   帧号与坐标与关卡、时长强耦合：改关卡 / 改 VANISH_*_SECONDS 后必须重新取样（F7）
+# ============================================================
+
+# 第一条非注释语句必须是存档点：spawn = 不读档，从关卡出生点跑起
+save spawn
+
+# --- 1. 从出生点跑到桥前 ---
+#   f74  跳过第 1 个坑（3 格）；落点其实是第 19 行那条单向平台（高 192px）
+#   f137 在平台上按住「下 + 跳」下穿回地面（刚好在第 2 个坑左侧）
+#   f157 跳过第 2 个坑（5 格，320px）
+0     assert_grounded 1
+0     press   RIGHT
+74    press   JUMP
+80    release JUMP
+115   assert_grounded 1
+135   press   DOWN
+137   press   JUMP
+145   release JUMP
+150   release DOWN
+157   press   JUMP
+163   release JUMP
+200   assert_grounded 1
+295   release RIGHT
+
+# --- 2. 站在桥上：预告期仍然是实体，可以站住 ---
+300   assert_grounded 1
+300   assert_pos      3434.7  -1345.3  3
+
+# --- 3. 预告结束：桥消失，人开始下落（这里证明它真的不再阻挡）---
+395   assert_grounded 0
+395   assert_state    FALL
+
+# --- 4. 掉出关卡 → 回到出生点重生 ---
+420   assert_grounded 1
+420   assert_pos      288    -1345.3  3
+
+# --- 5. 恢复 + 触发门槛：同一条路再走一遍 ---
+#   先**故意只蹭 4 帧**（f778-781 踩到桥的左端、x 刚越过 3037 就退回来），然后等到「假如那次蹭触发了、
+#   现在它早已消失」的时刻（>130 帧）再整座走过去 —— 走得过去，就证明「蹭一下不算触发」。
+520   press   RIGHT
+594   press   JUMP
+600   release JUMP
+655   press   DOWN
+657   press   JUMP
+665   release JUMP
+670   release DOWN
+677   press   JUMP
+683   release JUMP
+779   release RIGHT
+781   press   LEFT
+792   release LEFT
+930   press   RIGHT
+1010  release RIGHT
+1020  assert_grounded 1
+1020  assert_pos      3788    -1345.3  6
+
+# --- 6. 触发不可回退：人在 f~1001 就走下桥了，倒计时照样走完 ---
+#   这里往回走还是掉下去，就证明倒计时没有因为「离开」而重置（若重置了，此刻它还是实体、能走回去）
+1080  press   LEFT
+1100  release LEFT
+1130  assert_grounded 1
+1130  assert_pos      288     -1345.3  3

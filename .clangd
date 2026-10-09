@@ -12,12 +12,17 @@ CompileFlags:
     - /FC
     - /Z7
     - /Zc:preprocessor
+    - /utf-8
     - /DUNICODE
     - /D_UNICODE
     - /DMONO_DEBUG_TMP=1
     - /DMONO_DEBUG_VIS=1
     - /DMONO_DEBUG_BUILD=1
+    - /DMONO_DEBUG_INPUT=1
     - /Iinclude
+    - /Ieditor/include
+    - /Ithird_party/imgui
+    - /Ithird_party/backends
     - /clang:-fdiagnostics-show-option
     - /clang:-Wno-microsoft-goto
 

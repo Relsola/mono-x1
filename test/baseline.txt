@@ -1,0 +1,201 @@
+# ============================================================
+# 角色运动基线回归（固定逻辑步 60Hz，帧号从 0 开始）—— 全项目唯一一条常驻回归用例
+#   运行：build\main.exe input_script test\baseline.txt（在仓库根启动）
+#         跑完自动退出（退出码 0 = 全部断言通过，1 = 有失败或脚本没载入）
+#   取样：F7 打印当前逻辑步与玩家状态，用来写新脚本
+#   分析：main.exe --trace build/trace.csv 输出逐逻辑步状态
+#   说明：save spawn = 不读存档，从关卡出生点跑。**帧号与坐标与关卡强耦合**，
+#         改了关卡或运动数值后必须重新取样（否则会立刻得到一片 FAIL）
+# ============================================================
+
+# 第一条非注释语句必须是存档点：spawn = 不读档，从关卡出生点跑起
+save spawn
+
+# --- 1. 站立 / 走路 / 跳跃顶点 / 落地 ---
+0     assert_grounded 1
+0     assert_state    RUN
+0     press   RIGHT
+8     assert_pos      373.3   -1345.3  2
+8     assert_state    IDLE
+8     release RIGHT
+10    probe_reset
+12    press   JUMP
+18    release JUMP
+30    assert_state    JUMP
+40    assert_state    FALL
+55    assert_grounded 1
+55    assert_rise     220  8
+55    assert_pos      373.3   -1345.3  2
+
+# --- 2. 跳上实体阶梯（顶面 -1216，比地面高 3 格）---
+70    press   RIGHT
+70    press   JUMP
+76    release JUMP
+105   release RIGHT
+120   assert_grounded 1
+120   assert_pos      658.1   -1153.3  2
+
+# --- 3. 走下阶梯落到地面，起跳越过 3 格坑，落到单向平台上 ---
+130   press   RIGHT
+174   press   JUMP
+180   release JUMP
+220   release RIGHT
+235   assert_grounded 1
+235   assert_pos      1618.1  -1153.3  2
+
+# --- 4. 单向平台：从下方跳穿，站到上一层（顶面 -1024）---
+265   press   JUMP
+271   release JUMP
+310   assert_grounded 1
+310   assert_pos      1618.1  -961.3   2
+
+# --- 5. 单向平台：按住下 + 跳 向下穿透，落回下层 ---
+340   press   DOWN
+342   press   JUMP
+350   release JUMP
+360   release DOWN
+410   assert_grounded 1
+410   assert_pos      1618.1  -1153.3  2
+
+# --- 6. 土狼时间：走出平台边缘后 3 帧内仍可起跳 ---
+420   press   RIGHT
+443   press   JUMP
+449   release JUMP
+446   assert_state    JUMP
+455   release RIGHT
+520   assert_grounded 1
+
+# --- 7. 冲刺：水平位移 240 像素 ---
+540   press   DASH
+546   release DASH
+550   assert_pos      2231.5  -1345.3  4
+
+# --- 8. 掉进坑里后重生回出生点 ---
+600   assert_grounded 1
+600   assert_pos      288.0   -1345.3  3
+
+# --- 9. 跑动起跳 + 空中冲刺（跨越 9 格大坑的距离预算）---
+610   probe_reset
+610   press   RIGHT
+670   press   JUMP
+676   release JUMP
+685   press   DASH
+691   release DASH
+730   release RIGHT
+780   assert_grounded 1
+780   assert_run_x   1300  30
+780   assert_pos      1712.0  -1153.3  3
+
+# --- 10. 二段跳：地面起跳后空中再按一次，总上升约 461 像素（单跳约 232）；
+#          第三次按下时次数已用完 —— 此处若仍在上升就说明多出了一段 ---
+790   assert_grounded 1
+790   probe_reset
+795   press   JUMP
+801   release JUMP
+813   press   JUMP
+819   release JUMP
+828   press   JUMP
+834   release JUMP
+841   assert_state    FALL
+880   assert_grounded 1
+880   assert_rise     450  20
+
+# --- 11. 边界墙 + 攀爬塔：左墙挡住角色，六次跳跃逐层爬到顶层 ---
+#         （相机在这一带会吃到左边界与上边界夹取，见 docs 与 --trace 的 cam_x / cam_y 列）
+885   press   LEFT
+1000  assert_grounded 1
+1000  assert_pos      99.2   -1345.3  2
+1010  press   JUMP
+1016  release JUMP
+1040  assert_grounded 1
+1040  assert_pos      99.2   -1153.3  2
+1050  press   JUMP
+1056  release JUMP
+1080  assert_grounded 1
+1080  assert_pos      99.2   -961.3   2
+1090  press   JUMP
+1096  release JUMP
+1120  assert_grounded 1
+1120  assert_pos      99.2   -769.3   2
+1130  press   JUMP
+1136  release JUMP
+1160  assert_grounded 1
+1160  assert_pos      99.2   -577.3   2
+1170  press   JUMP
+1176  release JUMP
+1200  assert_grounded 1
+1200  assert_pos      99.2   -385.3   2
+1210  press   JUMP
+1216  release JUMP
+1240  assert_grounded 1
+1240  assert_pos      99.2   -193.3   2
+
+# --- 12. 从攀爬塔返回地面并通过右侧门洞；先取样跨图与自动走入的实际帧号 ---
+1250  release LEFT
+1250  press   RIGHT
+1250  press   JUMP
+1256  release JUMP
+1285  press   JUMP
+1291  release JUMP
+1300  press   DASH
+1306  release DASH
+1320  press   JUMP
+1326  release JUMP
+1355  press   JUMP
+1361  release JUMP
+1370  press   DASH
+1376  release DASH
+1390  press   JUMP
+1396  release JUMP
+1425  press   JUMP
+1431  release JUMP
+1440  press   DASH
+1446  release DASH
+1460  press   JUMP
+1466  release JUMP
+1495  press   JUMP
+1501  release JUMP
+1510  press   DASH
+1516  release DASH
+1530  press   JUMP
+1536  release JUMP
+1565  press   JUMP
+1571  release JUMP
+1580  press   DASH
+1586  release DASH
+1600  press   JUMP
+1606  release JUMP
+1635  press   JUMP
+1641  release JUMP
+1650  press   DASH
+1656  release DASH
+1670  press   JUMP
+1676  release JUMP
+1705  press   JUMP
+1711  release JUMP
+1720  press   DASH
+1726  release DASH
+1750  assert_world SECOND
+1750  assert_transition 0
+1750  assert_pos      805.3  -1345.3  2
+1750  press   TIME_STOP
+1750  assert_time_stop 1
+1751  release TIME_STOP
+1800  assert_world SECOND
+1800  assert_pos      1338.7 -1345.3  2
+1800  assert_monster  1
+1800  probe_monster_respawns
+
+# --- 13. 第二世界：跨过六格坑，在安全距离外发射能量波消灭怪物 ---
+1808  press   JUMP
+1814  release JUMP
+1816  press   DASH
+1822  release DASH
+1828  press   JUMP
+1834  release JUMP
+1900  press   SHOOT
+1901  release SHOOT
+1960  assert_world    SECOND
+1960  assert_monster  1
+1960  assert_monster_respawns 1
+1960  release RIGHT

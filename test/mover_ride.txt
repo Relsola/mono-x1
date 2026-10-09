@@ -1,0 +1,67 @@
+# ============================================================
+# 移动组件回归：**斜轴平台驮着角色走完一个来回**
+# 第二世界那块平台：a = (1408, -1216)、b = (2304, -960)、speed 320、方形（96 x 16 半宽高）
+# 验证：
+#   ①大地图传送到 `SECOND 2`（1312, -1408）—— 顺带覆盖「进入世界会重建移动组件」
+#   ②走到平台正下方，二段跳落到它上面（grounded 必须是 1）
+#   ③骑着它走：每帧位移 = 轴向量 * (320/60/轴长)，**两个分量都跟得上**
+#     （轴长 931.85 → 每帧 (5.13, 1.47)，与实测一致）
+#   ④**到端点反向之后仍然站在上面** —— 这是 2026-09-25 修掉的那个 bug 的现场：
+#     驮人判定如果用「移动之后」的矩形，平台**朝下走**的那一段会被判成「没接触」，
+#     角色被留在原地直接掉下去（表现：这一刻 grounded 变 0 / state FALL）。
+#     用例里 f430~f480 经过一次反向（t=0 端）、f620~f660 经过第二次（t=1 端），两次都断言 grounded 1
+# 为什么必须用斜轴：竖直轴上「朝下走」也可以被上升段盖住而看不出来，只有带竖直分量、
+#   而且要走完一个来回，才能拓出「驮人判定要用移动前的几何」这条 —— 只测上升段会漏掉。
+# 帧号与平台相位强耦合（传送那一步会把组件的 t 归零，所以相位是确定的）：
+#   改平台端点 / 速度 / 尺寸 / 改传送点 / 改二段跳初速之后必须重新取样（F7）。
+# 运行：build\main.exe input_script test\mover_ride.txt（在仓库根启动）
+# ============================================================
+
+# 第一条非注释语句必须是存档点：spawn = 不读档，从关卡出生点跑起
+save spawn
+
+# --- 1. 出生点在第一世界 ---
+0     assert_world    FIRST
+0     assert_grounded 1
+
+# --- 2. 开图 → 往下选三项（SECOND 2 = 1312,-1408）→ 确认（跨世界传送）---
+40    press   MAP
+44    release MAP
+60    press   DOWN
+64    release DOWN
+70    press   DOWN
+74    release DOWN
+80    press   DOWN
+84    release DOWN
+100   press   JUMP
+104   release JUMP
+160   assert_world    SECOND
+165   assert_grounded 1
+165   assert_pos      1312  -1345    2
+
+# --- 3. 走到平台正下方（它在这一相位会从头顶掠过），二段跳上去 ---
+170   press   RIGHT
+187   release RIGHT
+370   press   JUMP
+374   release JUMP
+391   press   JUMP
+395   release JUMP
+
+# --- 4. 落到平台上：接下来位置应当与平台同步（每帧 (5.13, 1.47)）---
+430   assert_grounded 1
+480   assert_grounded 1
+480   assert_pos      1546  -1093    3
+560   assert_grounded 1
+560   assert_pos      1956  -976     3
+
+# --- 5. 第一次反向（t=1 端）：f620 还在往右上，f640 已经在往左下，两步都必须站着 ---
+620   assert_grounded 1
+620   assert_pos      2264  -888     3
+640   assert_grounded 1
+660   assert_grounded 1
+660   assert_pos      2108  -933     3
+
+# --- 6. 继续被驮着往回走 ---
+700   assert_grounded 1
+740   assert_grounded 1
+740   assert_pos      1698  -1050    3

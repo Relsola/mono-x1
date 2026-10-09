@@ -1,0 +1,30 @@
+# ============================================================
+# 存档往返回归：写一份存档 → 继续跑（状态明显不同）→ 读档回到那一刻 → 再继续演化
+#   运行：build\main.exe input_script test\save_roundtrip.txt（或跑 test\run_tests.bat）
+#   覆盖：`save_state` / `load_state`（存档系统的写→读往返）与「读档后继续跑」的演化正确性
+#   说明：只用引擎自带的 spawn 出生点，不依赖任何外部存档文件；帧号与坐标与关卡强耦合，
+#         改关卡后要重新取样（F7 或 --trace）
+# ============================================================
+save spawn
+
+# --- 1. 落地站定后开始向右跑，第 20 帧写一份存档 -----------------------------
+0     assert_grounded 1
+0     press RIGHT
+20    save_state build/roundtrip.sav
+20    probe_reset
+
+# --- 2. 再跑 20 帧：位置与存档点已经明显不同（前 40 帧的位移）---------------
+40    assert_run_x 200  5
+40    assert_pos   725.33  -1345.28  0.05   # 读档前的位置（与下面那条相差 200px 以上）
+
+# --- 3. 读档：世界回到第 20 帧那一刻。同一帧内先读档再断言，位置应当逐位一致 ---
+40    load_state build/roundtrip.sav
+40    assert_pos   512.00  -1345.28  0.05   # 往返一致（容差 0.05 = 只容忍文本位数）
+40    assert_state RUN
+40    assert_grounded 1
+40    assert_air_jumps 1
+
+# --- 4. 读档之后接着跑：输入仍然是磁带里的（RIGHT 一直按着），位移应当正常 ---
+40    probe_reset
+70    release RIGHT
+70    assert_run_x 300  20

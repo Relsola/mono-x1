@@ -1,10 +1,18 @@
 #include "core.h"
+#include "shared/memory.h"
+#include "shared/file.h"
 #include "audio.h"
 #include "game_audio.h"
-#include "logger.h"
+#include "shared/logger.h"
+#include "shared/mono_math.h"
+
+#include <string.h> // memcpy（音频文件常驻解码）
 
 // 第三方解码器的实现集中在这一个编译单元，避免污染其他文件；
-// 用 warning(push, 0) 屏蔽第三方代码的告警，保持本项目构建输出干净
+// 用 warning(push, 0) 屏蔽第三方代码的告警。
+// **它不是万能的**：C4701 这类由代码生成阶段发出的告警不吃 pragma 里的 warning state（实测），
+// 所以 dr_wav.h 与 stb_vorbis.c 各有 1 条 C4701 仍然会出现在构建输出里 ——
+// 只有命令行 /W0 或 /wd4701 压得住。项目选择留着那两条，而不是为第三方代码关掉整条告警。
 #pragma warning(push, 0)
 #define DR_WAV_IMPLEMENTATION
 #include "lib/dr_wav.h"
@@ -81,7 +89,7 @@ internal SoundAsset load_ogg(const wchar_t *path, const void *data, u32 data_siz
     SoundAsset asset = {};
 
     int error = 0;
-    stb_vorbis *vorbis = stb_vorbis_open_memory((const unsigned char *)data, (i32)data_size, &error, nullptr);
+    stb_vorbis *vorbis = stb_vorbis_open_memory((const unsigned char *)data, (int)data_size, &error, nullptr);
     if (!vorbis) {
         LOG_ERROR("Audio: OGG 解析失败 (stb_vorbis error %d): %ls", error, path);
         return asset;
@@ -105,7 +113,7 @@ internal SoundAsset load_ogg(const wchar_t *path, const void *data, u32 data_siz
     while (frames_read < frames) {
         u32 want = MIN(CHUNK_FRAMES, frames - frames_read);
         f32 *dst = samples + (u64)frames_read * channels;
-        int got = stb_vorbis_get_samples_float_interleaved(vorbis, (i32)channels, dst, (i32)(want * channels));
+        int got = stb_vorbis_get_samples_float_interleaved(vorbis, (int)channels, dst, (int)(want * channels));
         if (got <= 0) {
             break;
         }
@@ -157,7 +165,6 @@ internal SoundAsset load_asset(const wchar_t *path)
 
     asset = path_has_extension(path, L".ogg") ? load_ogg(path, file.contents, file.file_size)
                                               : load_wav(path, file.contents, file.file_size);
-    free_file_memory(file.contents);
     return asset;
 }
 
@@ -174,7 +181,6 @@ internal void load_stream_asset(const wchar_t *path, void **out_data, u32 *out_b
     // 压缩数据搬进 arena 常驻（文件缓冲来自 VirtualAlloc，拷完立即释放）
     u8 *resident = (u8 *)arena_push(file.file_size);
     memcpy(resident, file.contents, file.file_size);
-    free_file_memory(file.contents);
 
     *out_data = resident;
     *out_bytes = file.file_size;
@@ -212,8 +218,8 @@ internal u32 bgm_stream_fill(void *user, f32 *dst, u32 frames_want, bool *at_end
     while (written < frames_want) {
         u32 want = frames_want - written;
         f32 *out = dst + (u64)written * stream->channels;
-        int got = stb_vorbis_get_samples_float_interleaved(stream->vorbis, (i32)stream->channels,
-                                                          out, (i32)(want * stream->channels));
+        int got = stb_vorbis_get_samples_float_interleaved(stream->vorbis, (int)stream->channels,
+                                                           out, (int)(want * stream->channels));
 
         if (got > 0) {
             written += (u32)got;
@@ -255,7 +261,7 @@ internal void game_audio_start_bgm()
     BgmStream *stream = (BgmStream *)arena_push(sizeof(BgmStream));
 
     int error = 0;
-    stream->vorbis = stb_vorbis_open_memory((const unsigned char *)bgm_compressed, (i32)bgm_compressed_bytes, &error, nullptr);
+    stream->vorbis = stb_vorbis_open_memory((const unsigned char *)bgm_compressed, (int)bgm_compressed_bytes, &error, nullptr);
     if (!stream->vorbis) {
         LOG_ERROR("Audio: 背景音乐解码器打开失败 (stb_vorbis error %d)", error);
         return;
@@ -288,12 +294,10 @@ internal void game_audio_start_bgm()
     bgm_handle = audio_play_stream(audio_state, &source, &params);
 }
 
+// 只在 audio_create 成功时调用（wWinMain 已经判过空指针：音频不是运行的必需条件，
+// 失败只降级为静音，所以这里不需要再分一支「不可用」的路径）
 void game_audio_init(AudioState *audio)
 {
-    if (!audio || !audio->engine) {
-        LOG_WARN("Audio: 音频系统不可用，跳过音频素材加载");
-        return;
-    }
     audio_state = audio;
 
     coin_asset = load_asset(COIN_PATH);
@@ -339,7 +343,7 @@ void game_audio_toggle_bgm()
     if (audio_is_stream_playing(audio_state, bgm_handle)) {
         audio_stop_stream(audio_state, bgm_handle);
         bgm_handle = {};
-        LOG_INFO("Audio: 背景音乐停止（流式）");
+        LOG_DEBUG("Audio: 背景音乐停止（流式）");
     } else {
         game_audio_start_bgm();
     }

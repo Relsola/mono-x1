@@ -1,0 +1,164 @@
+[
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/main.cc",
+        "output": "build/main.obj",
+        "command": "clang-cl /c src/main.cc /Fo:main.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/scene.cc",
+        "output": "build/scene.obj",
+        "command": "clang-cl /c src/scene.cc /Fo:scene.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/game.cc",
+        "output": "build/game.obj",
+        "command": "clang-cl /c src/game.cc /Fo:game.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/ui.cc",
+        "output": "build/ui.obj",
+        "command": "clang-cl /c src/ui.cc /Fo:ui.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/font.cc",
+        "output": "build/font.obj",
+        "command": "clang-cl /c src/font.cc /Fo:font.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/save.cc",
+        "output": "build/save.obj",
+        "command": "clang-cl /c src/save.cc /Fo:save.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/sprite.cc",
+        "output": "build/sprite.obj",
+        "command": "clang-cl /c src/sprite.cc /Fo:sprite.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/level.cc",
+        "output": "build/level.obj",
+        "command": "clang-cl /c src/level.cc /Fo:level.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/shared/level_asset.cc",
+        "output": "build/level_asset.obj",
+        "command": "clang-cl /c src/shared/level_asset.cc /Fo:level_asset.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/platform_win32.cc",
+        "output": "build/platform_win32.obj",
+        "command": "clang-cl /c src/platform_win32.cc /Fo:platform_win32.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/collision.cc",
+        "output": "build/collision.obj",
+        "command": "clang-cl /c src/collision.cc /Fo:collision.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/camera.cc",
+        "output": "build/camera.obj",
+        "command": "clang-cl /c src/camera.cc /Fo:camera.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/debug/debug_vis.cc",
+        "output": "build/debug_vis.obj",
+        "command": "clang-cl /c src/debug/debug_vis.cc /Fo:debug_vis.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/debug/trace.cc",
+        "output": "build/trace.obj",
+        "command": "clang-cl /c src/debug/trace.cc /Fo:trace.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/debug/replay.cc",
+        "output": "build/replay.obj",
+        "command": "clang-cl /c src/debug/replay.cc /Fo:replay.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/input.cc",
+        "output": "build/input.obj",
+        "command": "clang-cl /c src/input.cc /Fo:input.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/win32_input.cc",
+        "output": "build/win32_input.obj",
+        "command": "clang-cl /c src/win32_input.cc /Fo:win32_input.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/gameinput_input.cc",
+        "output": "build/gameinput_input.obj",
+        "command": "clang-cl /c src/gameinput_input.cc /Fo:gameinput_input.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/debug/input_script.cc",
+        "output": "build/input_script.obj",
+        "command": "clang-cl /c src/debug/input_script.cc /Fo:input_script.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/d3d12_renderer.cc",
+        "output": "build/d3d12_renderer.obj",
+        "command": "clang-cl /c src/d3d12_renderer.cc /Fo:d3d12_renderer.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/shared/logger.cc",
+        "output": "build/logger.obj",
+        "command": "clang-cl /c src/shared/logger.cc /Fo:logger.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/audio.cc",
+        "output": "build/audio.obj",
+        "command": "clang-cl /c src/audio.cc /Fo:audio.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/src/game_audio.cc",
+        "output": "build/game_audio.obj",
+        "command": "clang-cl /c src/game_audio.cc /Fo:game_audio.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/editor/src/editor_main.cc",
+        "output": "build/editor/editor_main.obj",
+        "command": "clang-cl /c editor/src/editor_main.cc /Fo:editor_main.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/editor/src/editor_doc.cc",
+        "output": "build/editor/editor_doc.obj",
+        "command": "clang-cl /c editor/src/editor_doc.cc /Fo:editor_doc.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/editor/src/editor_ui.cc",
+        "output": "build/editor/editor_ui.obj",
+        "command": "clang-cl /c editor/src/editor_ui.cc /Fo:editor_ui.obj"
+    },
+    {
+        "directory": "C:/Users/30890/Desktop/DirectX",
+        "file": "C:/Users/30890/Desktop/DirectX/editor/src/editor_edit.cc",
+        "output": "build/editor/editor_edit.obj",
+        "command": "clang-cl /c editor/src/editor_edit.cc /Fo:editor_edit.obj"
+    }
+]

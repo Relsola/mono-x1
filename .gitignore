@@ -1,0 +1,12 @@
+build
+data
+.vscode
+.cache
+.agents
+*.bin
+
+# file
+*.log
+
+# folder
+third_party
